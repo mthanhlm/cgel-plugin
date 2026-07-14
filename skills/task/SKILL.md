@@ -50,11 +50,17 @@ Every acceptance criterion needs an id and a description; name
 
 1. Run `cgel validate` — fix schema errors until `VALIDATE PASS`.
 2. Run `cgel summary` — it prints the normalized summary and a digest line.
-3. Show the summary to the user verbatim and ask them to approve the seal.
+3. Show the summary to the user verbatim so they can object before the seal.
 4. Seal with the EXACT digest from the summary:
    `cgel seal <TASK-ID> --digest <sha256:...>`
-   - `seal_mode=human` (protected capabilities present): the user must
-     approve or type this command themselves — never smuggle it past them.
+   The permission prompt on this command is the human anchor — the user
+   approving that prompt (or typing the command themselves) IS the seal
+   approval. Do NOT also make them type "approve" in chat first: one gate,
+   not two.
+   - Only if `cgel seal` is allowlisted (no permission prompt fires) AND
+     `seal_mode=human` (protected capabilities present): ask the user to
+     type the command themselves, since the prompt anchor is gone — never
+     smuggle a protected seal past them.
    - If seal is denied for dirty files, STOP and ask the user; only reseal
      with `--allow-dirty` after their explicit confirmation.
 

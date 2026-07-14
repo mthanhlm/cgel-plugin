@@ -1,6 +1,6 @@
 {
   "name": "cgel",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Contract-Gated Evidence Loop — sealed task contracts with scope-gated edits, a frozen governance bundle, hash-chained verification evidence, budgeted iterations with a default-same failure guard, a read-only semantic verifier, and an evidence-gated PASS with sanitized attestations.",
   "author": {
     "name": "mthanhlm"

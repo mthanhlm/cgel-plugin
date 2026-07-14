@@ -20,7 +20,11 @@ real experiment.
    change that tests it" --expected-checks unit-tests`
    The first open moves the task SEALED → ACTIVE. You cannot open a second
    iteration while one is undecided.
-3. **CHANGE** — edit inside `scope.allowed` only.
+3. **CHANGE** — edit inside `scope.allowed` only. Leave code cleaner than
+   you found it: never write a comment that just restates what the code
+   does, and delete any redundant or obsolete comment you pass through in a
+   file you're already editing — even one you did not write. Comments earn
+   their place by explaining *why*, not by narrating *what*.
 4. **VERIFY** — `cgel verify <check-id>` for the checks this iteration was
    supposed to move. Manual command runs are not evidence.
 5. **DECIDE** — close the iteration honestly:

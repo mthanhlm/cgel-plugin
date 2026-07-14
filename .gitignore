@@ -3,3 +3,4 @@ __pycache__/
 # repo-local skill, intentionally not published
 .claude/skills/cgel-release/
 .task/
+.cgel/

@@ -1,0 +1,99 @@
+"""The repo's public claims stay true and stay legal.
+
+Two failure modes this guards. First, a manifest that declares a license the
+repo does not contain — GitHub then reports no license at all, which legally
+means all rights reserved, so nobody can use the thing. Second, and worse for
+a governance tool: a public claim drifting above what the code enforces.
+CGEL's first principle is enforcement honesty, so the honest statements are
+load-bearing product, not boilerplate, and deleting one has to fail a test.
+"""
+
+import json
+import os
+import unittest
+
+from hookrunner import PLUGIN_ROOT, REPO_ROOT
+
+ENFORCEMENT_CLASSES = (
+    "HARD_ENFORCED",
+    "EVIDENCE_GATED",
+    "HUMAN_GATED",
+    "GUIDANCE_ONLY",
+)
+
+
+def read(*parts):
+    with open(os.path.join(REPO_ROOT, *parts), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def plugin_manifest():
+    with open(
+        os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8"
+    ) as fh:
+        return json.load(fh)
+
+
+class VacuousPassGuard(unittest.TestCase):
+    def test_documents_are_found_and_substantial(self):
+        for name in ("LICENSE", "SECURITY.md", "README.md"):
+            self.assertGreater(len(read(name)), 400, "%s too short" % name)
+
+
+class LicenseMatchesTheManifest(unittest.TestCase):
+    def test_license_file_carries_mit_text(self):
+        text = read("LICENSE")
+        self.assertIn("MIT License", text)
+        self.assertIn("Permission is hereby granted, free of charge", text)
+        self.assertIn("WITHOUT WARRANTY OF ANY KIND", text)
+
+    def test_manifest_declares_the_same_license(self):
+        # plugin.json said MIT for eight releases while no LICENSE existed.
+        self.assertEqual(plugin_manifest()["license"], "MIT")
+
+    def test_declared_license_is_the_one_shipped(self):
+        declared = plugin_manifest()["license"]
+        self.assertIn("%s License" % declared, read("LICENSE"))
+
+
+class SecurityStatesTheRealBoundary(unittest.TestCase):
+    def test_profile_a_is_not_claimed_as_a_trust_boundary(self):
+        self.assertIn("not a hard trust boundary", read("SECURITY.md"))
+
+    def test_tamper_evidence_is_distinguished_from_prevention(self):
+        text = read("SECURITY.md")
+        self.assertIn("tamper-evident", text)
+        self.assertIn("Profile B", text)
+
+    def test_profile_b_is_not_advertised_as_shipping(self):
+        self.assertIn("Profile B is not implemented yet", read("SECURITY.md"))
+
+    def test_the_known_gaps_are_listed_as_out_of_scope(self):
+        # A vulnerability report about a documented limitation wastes
+        # everyone's time; saying so up front is part of the honesty.
+        text = read("SECURITY.md")
+        self.assertIn("Out of scope", text)
+        self.assertIn("echo tests passed", text)
+
+
+class ReadmeCarriesTheTaxonomy(unittest.TestCase):
+    def test_all_four_enforcement_classes_are_named(self):
+        text = read("README.md")
+        for cls in ENFORCEMENT_CLASSES:
+            self.assertIn(cls, text)
+
+    def test_profile_a_limitations_are_documented(self):
+        text = read("README.md")
+        self.assertIn("Explicit limitations (Profile A honesty)", text)
+        self.assertIn("Bash writes are not blocked", text)
+
+    def test_the_local_registry_cost_is_documented(self):
+        # D-35 traded principle #3 for keeping .cgel/ out of git history.
+        # A trade that is never written down reads as a free win later.
+        text = read("README.md")
+        self.assertIn("The registry is local, never shared", text)
+        self.assertIn("D-35", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,22 +1,23 @@
-"""CI runs the release preflight, and runs every check the registry declares.
+"""CI runs the release preflight on every push.
 
 The cgel-release skill tells a human to run the suite before shipping; the
 workflow is what makes that true when nobody reads the skill. These tests
-pin the properties that make the workflow worth having — if it stops
-running on main, or starts listing test modules by hand, or drifts away
-from the registered checks, the green tick would start meaning less than
-it appears to.
+pin the properties that make it worth having — if it stops running on main,
+or starts listing test modules by hand, the green tick would start meaning
+less than it appears to.
+
+There is deliberately no test that CI runs every check in .cgel/registry.json.
+Per EXC-1 the registry is gitignored, so CI has no registry to compare
+against, and a check that silently no-ops in CI is worse than no check.
 """
 
-import json
 import os
 import re
 import unittest
 
-from hookrunner import PLUGIN_ROOT
+from hookrunner import REPO_ROOT
 
-WORKFLOW_PATH = os.path.join(PLUGIN_ROOT, ".github", "workflows", "ci.yml")
-REGISTRY_PATH = os.path.join(PLUGIN_ROOT, ".cgel", "registry.json")
+WORKFLOW_PATH = os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")
 
 # `unittest tests.foo.test_bar` — a hand-maintained module list, which stops
 # running whatever nobody remembered to append to it.
@@ -32,18 +33,9 @@ def workflow_text():
         return fh.read()
 
 
-def registered_commands():
-    with open(REGISTRY_PATH, encoding="utf-8") as fh:
-        checks = json.load(fh)["checks"]
-    return {check_id: entry["command"] for check_id, entry in checks.items()}
-
-
 class VacuousPassGuard(unittest.TestCase):
     def test_workflow_is_found_and_substantial(self):
         self.assertGreater(len(workflow_text()), 200)
-
-    def test_registry_has_checks(self):
-        self.assertGreaterEqual(len(registered_commands()), 3)
 
 
 class WorkflowTriggers(unittest.TestCase):
@@ -68,12 +60,10 @@ class WorkflowRunsTheRealSuite(unittest.TestCase):
             % (match.group(0) if match else ""),
         )
 
-    def test_every_registered_check_runs_in_ci(self):
-        # Otherwise the sealed yardstick and the green tick measure
-        # different things.
+    def test_preflight_covers_the_shipped_payload(self):
         text = workflow_text()
-        for check_id, command in registered_commands().items():
-            self.assertIn(command, text, "check %r never runs in CI" % check_id)
+        self.assertIn("compileall -q plugin/scripts plugin/bin/cgel", text)
+        self.assertIn("plugin/hooks/hooks.json", text)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,10 @@ import os
 import subprocess
 import sys
 
-PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The repo is the marketplace; only plugin/ is the payload that ships, so
+# tests live outside it and reach in.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PLUGIN_ROOT = os.path.join(REPO_ROOT, "plugin")
 SCRIPTS_DIR = os.path.join(PLUGIN_ROOT, "scripts")
 CLI = os.path.join(PLUGIN_ROOT, "bin", "cgel")
 

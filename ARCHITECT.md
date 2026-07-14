@@ -332,7 +332,7 @@ project-repo/                         # guidebook per-project (committed, team-o
 ├── docs/
 │   ├── adr/
 │   └── standards/                    # semantic rules (RULE IDs) + reference-index.yaml
-├── .cgel/
+├── .cgel/                            # gitignored kể từ D-35 (xem bên dưới) — local, không commit
 │   ├── registry.yaml                 # verification registry (governance path)
 │   └── config.yaml                   # attestation/isolation policy
 └── .task/                            # gitignored — mirror debug, KHÔNG phải source of truth
@@ -345,6 +345,16 @@ $PLATFORM_STATE_DIR/cgel/<repo-id>/<task-id>/    # CGEL runtime state store (pla
 ```
 
 Mục đích tách ba nơi: plugin = cơ chế (dùng chung mọi project); project repo = tri thức + thước đo (team sở hữu, review như code); state dir = runtime (không commit, integrity theo profile).
+
+**D-35 (sửa đổi sau v1.0 — chủ dự án quyết, ghi nhận nguyên trạng):** `cgel init` gitignore cả `.cgel/` lẫn `.task/`. Lý do: plugin không được thêm file vào lịch sử git của project dùng nó. Đây là **thu hẹp có ý thức** của D-3/§15.7 bên trên — registry thôi không còn là "thước đo team sở hữu, review như code", mà trở thành state cục bộ theo máy.
+
+Cái giá đã được nêu và chấp nhận:
+
+1. Clone mới không có registry → `cgel verify` không có check nào để chạy → không có evidence → PASS không đạt được cho tới khi ai đó đăng ký lại check bằng tay.
+2. Registry per-machine, không qua review → mỗi dev (và mỗi agent) tự viết thước đo chấm chính mình. Đây là **suy yếu trực tiếp của nguyên tắc #3** ("bên được đánh giá không giữ thước đo") — vector `echo tests passed` của §15.8 Phase 1 nay chỉ còn permission prompt chặn, không còn code review.
+3. Không thể có test khẳng định CI chạy đúng các check trong registry (CI không có registry để so).
+
+Điểm 2 là mâu thuẫn thật với nguyên tắc #3, không phải chi tiết triển khai. Ghi lại ở đây để lần sau đọc còn thấy — nếu muốn khôi phục, bỏ `.cgel/` khỏi `GITIGNORE_ENTRIES` trong `bin/cgel` và commit registry trở lại.
 
 ## 15.8 MVP implementation plan (walking skeleton)
 

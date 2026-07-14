@@ -89,6 +89,15 @@ Read this before trusting the gate:
   so a repo can still legitimately commit *about* them (`docs: document
   Claude Code compatibility` is allowed). The broader "don't mention an AI
   tool at all" half of the rule is instruction-only.
+- **The registry is local, never shared.** `cgel init` gitignores `.cgel/`,
+  so the verification registry stays out of the project's git history
+  (D-35). Two consequences: a fresh clone has no checks, so `cgel verify`
+  has nothing to run and PASS is unreachable until someone registers them
+  again; and the yardstick is per-machine and unreviewed, so the `echo tests
+  passed` case above is held off by the `cgel check add` permission prompt
+  alone — not by code review. This is a deliberate trade of principle #3
+  ("the evaluated party does not hold the yardstick") for keeping the
+  plugin out of your history.
 - **The hash chain is recomputable by the same principal.** A determined
   local process could rewrite `evidence.jsonl` and re-chain it. `cgel
   audit` catches accidents and naive edits; hard integrity needs Profile B

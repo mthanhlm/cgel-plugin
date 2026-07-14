@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "cgel",
-      "source": "./",
+      "source": "./plugin",
       "description": "Contract-Gated Evidence Loop — sealed task contracts, hash-chained verification evidence, budgeted iterations, read-only semantic verifier, evidence-gated PASS, no AI attribution on commits/PRs."
     }
   ]

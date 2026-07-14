@@ -22,6 +22,11 @@ PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "scripts"))
 import cgel_common as C
 
+# CGEL adds nothing to a host project's history: the runtime mirror and the
+# registry both stay local. The registry being local means each clone starts
+# with no checks and must register its own before any evidence can exist.
+GITIGNORE_ENTRIES = (".cgel/", ".task/")
+
 
 def fail(line, *details):
     for detail in details:
@@ -89,17 +94,24 @@ def cmd_init(_args):
         if os.path.isfile(gitignore):
             with open(gitignore, encoding="utf-8") as fh:
                 existing = fh.read()
-        if ".task/" not in existing.splitlines():
+        lines = existing.splitlines()
+        missing = [entry for entry in GITIGNORE_ENTRIES if entry not in lines]
+        if missing:
             with open(gitignore, "a", encoding="utf-8") as fh:
                 if existing and not existing.endswith("\n"):
                     fh.write("\n")
-                fh.write(".task/\n")
+                for entry in missing:
+                    fh.write(entry + "\n")
     except Exception as exc:
         C._debug("init:gitignore", exc)
-        print("cgel: could not update .gitignore — add '.task/' manually.", file=sys.stderr)
+        print(
+            "cgel: could not update .gitignore — add %s manually."
+            % " and ".join("'%s'" % entry for entry in GITIGNORE_ENTRIES),
+            file=sys.stderr,
+        )
     if already:
         return ok("INIT OK — already initialized (gate on)")
-    return ok("INIT OK — .cgel/ created, .task/ created, gate on")
+    return ok("INIT OK — .cgel/ and .task/ created and gitignored, gate on")
 
 
 def cmd_validate(_args):

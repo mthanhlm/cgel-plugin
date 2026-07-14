@@ -303,5 +303,58 @@ class LoopTestCase(unittest.TestCase):
         self.assertIn("chain=intact", decision_line(out))
 
 
+class SymlinkTestCase(unittest.TestCase):
+    """SessionStart auto-links bin/cgel into ~/.local/bin — safely."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp(prefix="cgel-home-")
+        self.link = os.path.join(self.home, ".local", "bin", "cgel")
+
+    def tearDown(self):
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def run_ss(self, extra_env=None):
+        env = {"HOME": self.home}
+        env.update(extra_env or {})
+        return run_hook("session_start.py", {"cwd": self.home}, env=env)
+
+    def test_symlink_created_and_idempotent(self):
+        code, _, err = self.run_ss()
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.path.islink(self.link))
+        self.assertTrue(os.readlink(self.link).endswith("bin/cgel"))
+        code, _, _ = self.run_ss()
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.islink(self.link))
+
+    def test_never_clobbers_foreign_file(self):
+        os.makedirs(os.path.dirname(self.link))
+        with open(self.link, "w") as fh:
+            fh.write("#!/bin/sh\necho mine\n")
+        code, _, _ = self.run_ss()
+        self.assertEqual(code, 0)
+        self.assertFalse(os.path.islink(self.link))
+        with open(self.link) as fh:
+            self.assertIn("mine", fh.read())
+
+    def test_repairs_stale_cgel_link_only(self):
+        os.makedirs(os.path.dirname(self.link))
+        stale = os.path.join(self.home, "old-install", "bin", "cgel")
+        os.symlink(stale, self.link)
+        self.run_ss()
+        self.assertTrue(os.path.islink(self.link))
+        self.assertNotEqual(os.readlink(self.link), stale)
+        foreign = os.path.join(self.home, "somewhere", "else")
+        os.unlink(self.link)
+        os.symlink(foreign, self.link)
+        self.run_ss()
+        self.assertEqual(os.readlink(self.link), foreign)  # left alone
+
+    def test_opt_out(self):
+        code, _, _ = self.run_ss({"CGEL_NO_SYMLINK": "1"})
+        self.assertEqual(code, 0)
+        self.assertFalse(os.path.exists(self.link))
+
+
 if __name__ == "__main__":
     unittest.main()

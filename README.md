@@ -104,8 +104,15 @@ Read this before trusting the gate:
 # add this repo as a plugin marketplace, then install the plugin
 claude plugin marketplace add mthanhlm/cgel-plugin
 claude plugin install cgel@cgel
+```
 
-# put the cgel CLI on your PATH (find the install dir with `claude plugin list`)
+The `cgel` CLI lands on your PATH automatically: on the first session
+after install, the SessionStart hook symlinks `~/.local/bin/cgel` to the
+plugin's `bin/cgel` (POSIX only; it never overwrites a file it does not
+own; opt out with `CGEL_NO_SYMLINK=1`). Manual fallback — same thing by
+hand:
+
+```bash
 ln -s ~/.claude/plugins/marketplaces/cgel/bin/cgel ~/.local/bin/cgel
 ```
 

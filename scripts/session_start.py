@@ -1,8 +1,13 @@
-"""CGEL SessionStart — resume protocol.
+"""CGEL SessionStart — resume protocol + CLI PATH setup.
 
-On session start/resume, injects a compact state summary from the runtime
-state store as additionalContext, so a fresh context window re-enters the
-loop where it left off instead of re-deriving (or ignoring) task state.
+On session start/resume:
+  1. ensures `cgel` is reachable on PATH (symlink ~/.local/bin/cgel ->
+     this plugin's bin/cgel; POSIX only; opt-out CGEL_NO_SYMLINK=1;
+     never overwrites a file it does not own),
+  2. injects a compact state summary from the runtime state store as
+     additionalContext, so a fresh context window re-enters the loop
+     where it left off instead of re-deriving (or ignoring) task state.
+
 Silent when no CGEL task exists. Never blocks (exit 0 always).
 """
 
@@ -12,6 +17,34 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cgel_common as C
+
+
+def ensure_cli_symlink():
+    """Idempotent. Creates or repairs ~/.local/bin/cgel only when the link
+    is missing or clearly points at a (stale) cgel plugin install."""
+    if os.name == "nt" or os.environ.get("CGEL_NO_SYMLINK"):
+        return
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(
+        os.path.dirname(os.path.realpath(__file__))
+    )
+    target = os.path.join(plugin_root, "bin", "cgel")
+    if not os.path.isfile(target):
+        return
+    link = os.path.join(os.path.expanduser("~"), ".local", "bin", "cgel")
+    try:
+        if os.path.islink(link):
+            current = os.readlink(link)
+            if current == target:
+                return
+            if not current.endswith(os.path.join("bin", "cgel")):
+                return  # someone else's link — leave it alone
+            os.unlink(link)  # stale link from a previous install location
+        elif os.path.exists(link):
+            return  # a real file we do not own — never overwrite
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        os.symlink(target, link)
+    except OSError as exc:
+        C._debug("session_start:symlink", exc)
 
 
 def summary_text(repo_root, task):
@@ -73,6 +106,7 @@ def summary_text(repo_root, task):
 
 
 def main():
+    ensure_cli_symlink()
     try:
         payload = json.load(sys.stdin)
     except Exception as exc:

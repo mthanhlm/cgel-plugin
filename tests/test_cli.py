@@ -162,6 +162,40 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("SEAL OK", decision_line(out))
 
+    def test_check_add_list_and_force(self):
+        code, out, _ = self.cli(
+            "check", "add", "unit-tests", "--command", "npm test", "--kind", "test"
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("CHECK ADDED", decision_line(out))
+        code, out, _ = self.cli(
+            "check", "add", "unit-tests", "--command", "pytest"
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("already exists", decision_line(out))
+        code, _, _ = self.cli(
+            "check", "add", "unit-tests", "--command", "pytest", "--force"
+        )
+        self.assertEqual(code, 0)
+        code, out, err = self.cli("check", "list")
+        self.assertEqual(code, 0)
+        self.assertIn("CHECK LIST — 1 check(s)", decision_line(out))
+        self.assertIn("unit-tests: pytest", err)
+        with open(os.path.join(self.repo, ".cgel", "registry.json")) as fh:
+            registry = json.load(fh)
+        self.assertEqual(registry["checks"]["unit-tests"]["command"], "pytest")
+
+    def test_check_add_denied_while_task_open(self):
+        self.write_contract(CONTRACT)
+        digest = self.summary_digest()
+        self.cli("seal", "TASK-C1", "--digest", digest)
+        code, out, _ = self.cli(
+            "check", "add", "late-check", "--command", "echo x"
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("CHECK DENIED", decision_line(out))
+        self.assertIn("governance bundle", decision_line(out))
+
     def test_init_creates_structure(self):
         fresh = tempfile.mkdtemp(prefix="cgel-fresh-")
         try:

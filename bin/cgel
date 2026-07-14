@@ -650,6 +650,76 @@ def _pass_problems(root, task):
     return problems
 
 
+# ---------------------------------------------------------------- registry
+
+_CHECK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def cmd_check(args):
+    if args.check_command == "add":
+        return cmd_check_add(args)
+    if args.check_command == "list":
+        return cmd_check_list(args)
+    print("ERROR usage")
+    return 3
+
+
+def cmd_check_add(args):
+    root = require_repo_root()
+    task = C.load_state(root)
+    if task["lifecycle"] != "NO_TASK":
+        return fail(
+            "CHECK DENIED — task %s is %s; the registry is part of the sealed "
+            "governance bundle" % (task["task_id"], task["lifecycle"]),
+            "cgel: close the task first, or run a dedicated "
+            "modify-verification-registry task.",
+        )
+    if not _CHECK_ID_RE.match(args.check_id):
+        return fail("CHECK DENIED — invalid check id '%s'" % args.check_id)
+    if not args.check_command_str.strip():
+        return fail("CHECK DENIED — --command must not be empty")
+    registry, _ = C.load_registry(root)
+    checks = registry.setdefault("checks", {})
+    if args.check_id in checks and not args.force:
+        return fail(
+            "CHECK DENIED — '%s' already exists (use --force to overwrite)"
+            % args.check_id
+        )
+    entry = {"command": args.check_command_str.strip()}
+    if args.kind.strip():
+        entry["kind"] = args.kind.strip()
+    if args.timeout > 0:
+        entry["timeout_seconds"] = args.timeout
+    if args.workdir.strip():
+        entry["working_directory"] = args.workdir.strip()
+    checks[args.check_id] = entry
+    C.atomic_write_json(os.path.join(root, C.REGISTRY_REL_PATH), registry)
+    return ok(
+        "CHECK ADDED — %s: %s" % (args.check_id, entry["command"]),
+        "cgel: registered in %s. Run it with `cgel verify %s` once a task "
+        "is sealed." % (C.REGISTRY_REL_PATH, args.check_id),
+    )
+
+
+def cmd_check_list(_args):
+    root = require_repo_root()
+    registry, _ = C.load_registry(root)
+    checks = registry.get("checks") or {}
+    for check_id in sorted(checks):
+        entry = checks[check_id]
+        if not isinstance(entry, dict):
+            continue
+        print(
+            "%s: %s%s" % (
+                check_id,
+                entry.get("command", "?"),
+                " (kind: %s)" % entry["kind"] if entry.get("kind") else "",
+            ),
+            file=sys.stderr,
+        )
+    return ok("CHECK LIST — %d check(s)" % len(checks))
+
+
 # ----------------------------------------------------------- semantic layer
 
 def cmd_rules(_args):
@@ -1209,6 +1279,24 @@ def main():
     p_unblock.add_argument("--add-replans", dest="add_replans", type=int, default=0)
     p_unblock.add_argument("--reason", default="")
 
+    p_check = sub.add_parser(
+        "check", help="manage the verification registry (between tasks only)"
+    )
+    check_sub = p_check.add_subparsers(dest="check_command")
+    p_check_add = check_sub.add_parser(
+        "add", help="register a check (denied while a task is open)"
+    )
+    p_check_add.add_argument("check_id")
+    # dest must not collide with the top-level subcommand dest "command"
+    p_check_add.add_argument("--command", dest="check_command_str", required=True)
+    p_check_add.add_argument(
+        "--kind", default="", help="test|build|compile|lint|typecheck|security|eval"
+    )
+    p_check_add.add_argument("--timeout", type=int, default=0, help="seconds (default 600)")
+    p_check_add.add_argument("--workdir", default="")
+    p_check_add.add_argument("--force", action="store_true")
+    check_sub.add_parser("list", help="list registered checks")
+
     sub.add_parser("rules", help="list semantic rules parsed from docs/standards")
 
     p_sem = sub.add_parser("semantic", help="record verifier findings")
@@ -1246,6 +1334,7 @@ def main():
         "audit": cmd_audit,
         "iterate": cmd_iterate,
         "unblock": cmd_unblock,
+        "check": cmd_check,
         "rules": cmd_rules,
         "semantic": cmd_semantic,
         "attest": cmd_attest,

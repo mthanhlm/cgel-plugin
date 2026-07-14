@@ -9,6 +9,25 @@ user-invocable: false
 You are opening a task under the Contract-Gated Evidence Loop. The edit gate
 is closed until a contract is sealed; do not fight the gate — feed it.
 
+## 0. Repo not initialized yet?
+
+If there is no `.cgel/` directory and the user explicitly invoked
+`/cgel:task`, set the project up for them instead of bouncing the request:
+
+1. Run `cgel init` (creates `.cgel/`, `.task/`, a registry stub, and
+   gitignores `.task/`).
+2. Discover the project's real checks — test/build/lint commands from
+   `package.json`, `Makefile`, `pyproject.toml`, CI config — and register
+   each one:
+   `cgel check add unit-tests --command "npm test" --kind test`
+   Registry changes go ONLY through `cgel check add` — never Edit/Write
+   on `.cgel/**` (governance path) and never Bash file redirection.
+3. Tell the user in one short list what was initialized and which checks
+   were registered, then continue with intake below.
+
+`cgel check add` works only while no task is open; once sealed, the
+registry is frozen inside the governance bundle.
+
 ## 1. Intake
 
 Classify the request: task type (bug-fix, feature, refactor, ...), primary

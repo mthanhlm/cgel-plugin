@@ -122,13 +122,22 @@ git. Hooks, skills (`cgel:task`, `cgel:loop`, `cgel:attest`), agents
 sessions after install.
 
 CGEL is **opt-in per project**: nothing is gated until a repo contains a
-`.cgel/` directory (created by `cgel init`).
+`.cgel/` directory. Typing `/cgel:task <goal>` in an uninitialized repo
+auto-initializes it (the skill runs `cgel init` and registers the
+project's real checks via `cgel check add`).
+
+Recommended permission setup (makes the human gates real prompts):
+
+```json
+{"permissions": {"ask": ["Bash(cgel seal*)", "Bash(cgel unblock*)"]}}
+```
 
 ## Command reference
 
 | Command | What it does |
 |---|---|
 | `cgel init` | activate CGEL for the project (`.cgel/`, `.task/`, registry stub) |
+| `cgel check add/list` | register/list verification checks (between tasks only) |
 | `cgel validate` | schema-check `.task/contract.json` |
 | `cgel summary` | normalized contract summary + digest (show this to the user) |
 | `cgel seal <id> --digest <d>` | freeze contract + governance bundle; opens the edit gate |

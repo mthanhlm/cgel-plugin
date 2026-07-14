@@ -1,6 +1,6 @@
 {
   "name": "cgel",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Contract-Gated Evidence Loop — sealed task contracts with scope-gated edits, a frozen governance bundle, hash-chained verification evidence, budgeted iterations with a default-same failure guard, a read-only semantic verifier, an evidence-gated PASS with sanitized attestations, and commits/PRs authored solely by you — never AI-attributed.",
   "author": {
     "name": "mthanhlm"

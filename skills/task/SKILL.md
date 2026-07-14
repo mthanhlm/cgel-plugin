@@ -47,11 +47,30 @@ contract, and reseal — that is the ESCALATE path. Governance paths
 (`.claude/`, `.cgel/`, `docs/standards/`, `docs/adr/`) stay read-only unless
 the sealed contract grants the matching capability.
 
-## 5. Close honestly
+The seal also froze the **governance bundle** (registry, rules, hooks,
+guidebook). If any of those files change mid-task the task goes BLOCKED —
+reseal (adopting the new measure) or close honestly.
 
-Phase 0 has no evidence pipeline, so `PASS` is not available yet. When the
-work is done and you have run the project's checks manually, report results
-to the user and close with `cgel close --as ESCALATE --reason "ready for
-user verification"`. Use `ROLLED_BACK` or `ABORT` when that is the truth.
-Never claim a criterion passed without showing the command output that
-proves it.
+## 5. Loop with evidence
+
+Work proceeds in explicit iterations — follow the `cgel:loop` skill:
+`cgel iterate open` → change → `cgel verify <check-id>` → `cgel iterate
+decide`. Evidence exists only when `cgel verify` runs a registered check;
+running commands yourself and pasting output creates NO evidence, and any
+edit makes prior evidence stale. Budgets and the default-same failure
+guard are enforced by the store — when they block, the USER decides, not
+you.
+
+If a needed check is missing from `.cgel/registry.json`, that is a
+governance change: add it before sealing, or via a dedicated
+`modify-verification-registry` task — never mid-task.
+
+## 6. Close honestly
+
+Follow the `cgel:attest` skill: if the seal requires semantic
+verification, run the read-only `cgel:verifier` subagent and record its
+findings (`cgel semantic record`); then `cgel close --as PASS` — it
+succeeds only when every criterion has fresh passing evidence and no
+blocking finding stands, and it exports a sanitized attestation. If PASS
+is impossible, close with `ESCALATE --reason "..."`, `ROLLED_BACK`, or
+`ABORT`. Never claim a criterion passed without recorded evidence.

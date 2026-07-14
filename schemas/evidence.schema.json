@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cgel.dev/schemas/evidence.schema.json",
+  "title": "CGEL Evidence Record (Phase 1)",
+  "description": "Reference schema for one line of evidence.jsonl. Hash-chained, seal-bound, workspace-bound. Tamper-evident in Profile A, never tamper-proof.",
+  "type": "object",
+  "required": ["type", "check", "contract_digest", "governance_digest", "workspace", "result", "output", "chain"],
+  "properties": {
+    "type": {"const": "evidence"},
+    "check": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "string"},
+        "registry_digest": {"type": ["string", "null"]}
+      }
+    },
+    "contract_digest": {"type": "string", "pattern": "^sha256:"},
+    "governance_digest": {"type": "string", "pattern": "^sha256:"},
+    "workspace": {
+      "type": "object",
+      "required": ["base_revision", "diff_digest"],
+      "properties": {
+        "base_revision": {"type": "string"},
+        "diff_digest": {"type": "string"}
+      }
+    },
+    "edit_seq": {"type": "integer", "description": "edit events recorded before this evidence; PASS requires equality with the count at close time"},
+    "result": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["pass", "fail"]},
+        "exit_code": {"type": ["integer", "null"]},
+        "failure_kind": {
+          "type": ["string", "null"],
+          "description": "command_unavailable | permission_denied | environment | timeout | build | compile | typecheck | lint | test_assertion | test_crash | security | scope_violation | contract_violation | semantic_rule | unknown"
+        },
+        "failure_subject": {"type": ["string", "null"]},
+        "diagnostic_fingerprint": {"type": ["string", "null"]}
+      }
+    },
+    "output": {
+      "type": "object",
+      "required": ["digest"],
+      "properties": {
+        "digest": {"type": "string", "pattern": "^sha256:"},
+        "bytes": {"type": "integer"},
+        "summary": {"type": "string", "description": "head+tail truncated command output; full output exists only as a digest"}
+      }
+    },
+    "started_at": {"type": "string"},
+    "finished_at": {"type": "string"},
+    "chain": {
+      "type": "object",
+      "required": ["prev", "hash"],
+      "properties": {
+        "prev": {"type": "string", "description": "hash of the previous record, or genesis:<task-id> for the first"},
+        "hash": {"type": "string", "pattern": "^sha256:", "description": "sha256 of the canonical record with chain.hash removed"}
+      }
+    }
+  }
+}

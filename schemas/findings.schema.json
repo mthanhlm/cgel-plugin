@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cgel.dev/schemas/findings.schema.json",
+  "title": "CGEL Verifier Findings (Phase 3)",
+  "description": "Output of the read-only verifier subagent; the main agent writes it to .task/findings.json and records it with `cgel semantic record`. Findings are probabilistic evidence: a blocking finding stops PASS but a human resolves disagreement.",
+  "type": "object",
+  "required": ["findings"],
+  "properties": {
+    "verifier": {"type": "string"},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id", "status"],
+        "properties": {
+          "rule_id": {"type": "string", "description": "must exist in docs/standards (cgel rules)"},
+          "status": {"enum": ["pass", "fail"]},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 1.0},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path"],
+              "properties": {
+                "path": {"type": "string"},
+                "line": {"type": "integer"}
+              }
+            }
+          },
+          "reason": {"type": "string", "maxLength": 500}
+        }
+      }
+    }
+  }
+}

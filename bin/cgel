@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""cgel — CGEL Phase 0 CLI: contract lifecycle (draft -> validate -> summary
--> seal -> status -> close).
+"""cgel — CGEL CLI: contract lifecycle (draft -> validate -> summary -> seal)
+plus the Phase 1 evidence pipeline (verify -> audit -> evidence-gated PASS).
 
 Output contract: one machine-parseable decision line on stdout (last line);
 details and failures on stderr. Exit 0 = ok, 1 = denied/failed, 3 = usage.
@@ -8,11 +8,13 @@ details and failures on stderr. Exit 0 = ok, 1 = denied/failed, 3 = usage.
 Profile A honesty: this CLI packages logic; it is NOT a trust boundary.
 The human anchor for a seal is the user approving the exact `cgel seal
 <task> --digest sha256:...` command (permission prompt or typing it).
+Evidence records are hash-chained: tamper-EVIDENT, never tamper-proof.
 """
 
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -71,6 +73,16 @@ def cmd_init(_args):
     config_path = os.path.join(cgel_dir, "config.json")
     if not os.path.isfile(config_path):
         C.atomic_write_json(config_path, {"gate": "on", "git_guard": "on"})
+    registry_path = os.path.join(root, C.REGISTRY_REL_PATH)
+    if not os.path.isfile(registry_path):
+        C.atomic_write_json(
+            registry_path,
+            {
+                "checks": {},
+                "_doc": "verification registry — check-id: {command, "
+                "timeout_seconds, working_directory, success:{exit_code}, kind}",
+            },
+        )
     gitignore = os.path.join(root, ".gitignore")
     try:
         existing = ""
@@ -149,6 +161,26 @@ def cmd_summary(_args):
     return ok("SUMMARY %s digest=%s seal_mode=%s" % (c["task"]["id"], digest, seal_mode))
 
 
+def _semantic_requirement(contract, rules):
+    """Frozen at seal (D: trigger frozen). Deterministic, no model judgement."""
+    c = C.normalize_contract(contract)
+    reasons = []
+    if c["risk"]["level"] == "high":
+        reasons.append("risk.level=high")
+    if (c.get("ai") or {}).get("enabled"):
+        reasons.append("ai.enabled")
+    if c.get("semantic_review") is True:
+        reasons.append("contract.semantic_review=true")
+    blocking = sorted(r["id"] for r in rules.values() if r["blocking"])
+    if blocking and c["risk"]["level"] == "medium":
+        reasons.append("blocking rules present at risk.level=medium")
+    return {
+        "required": bool(reasons),
+        "reasons": reasons,
+        "blocking_rule_ids": blocking,
+    }
+
+
 def _dirty_paths_intersecting_scope(repo_root, allowed_patterns):
     try:
         proc = subprocess.run(
@@ -212,6 +244,12 @@ def cmd_seal(args):
             "SEAL DENIED — task %s is already active" % current["task_id"],
             "cgel: close it first (`cgel close --as ...`).",
         )
+    if current["lifecycle"] == "BLOCKED" and current["task_id"] != task_id:
+        return fail(
+            "SEAL DENIED — task %s is BLOCKED (%s)"
+            % (current["task_id"], current["state"].get("blocked_reason", "?")),
+            "cgel: close or reseal the blocked task before starting another.",
+        )
 
     dirty = _dirty_paths_intersecting_scope(root, c["scope"]["allowed"])
     if dirty and not args.allow_dirty:
@@ -224,6 +262,10 @@ def cmd_seal(args):
         )
 
     seal_mode = "human" if c["protected_capabilities"] else "auto"
+    bundle = C.governance_bundle(root)
+    workspace = C.workspace_snapshot(root)
+    semantic = _semantic_requirement(contract, C.load_semantic_rules(root))
+    reseal = current["lifecycle"] == "BLOCKED"
     store = C.repo_state_dir(root)
     task_dir = os.path.join(store, task_id)
     C.atomic_write_json(
@@ -235,8 +277,9 @@ def cmd_seal(args):
             "seal_mode": seal_mode,
             "sealed_at": C.utc_now(),
             "dirty_ack": bool(dirty),
-            # Phase 1 will add: governance_bundle digests, workspace revision
-            "governance_bundle": None,
+            "governance_bundle": bundle,
+            "workspace": workspace,
+            "semantic_verification": semantic,
         },
     )
     C.atomic_write_json(
@@ -254,9 +297,795 @@ def cmd_seal(args):
         fh.write(task_id + "\n")
 
     return ok(
-        "SEAL OK — %s digest=%s mode=%s" % (task_id, digest, seal_mode),
+        "SEAL OK — %s digest=%s mode=%s governance=%s%s"
+        % (
+            task_id,
+            digest,
+            seal_mode,
+            bundle["digest"],
+            " (reseal)" if reseal else "",
+        ),
         "cgel: edits are now allowed inside scope.allowed. Governance paths "
         "stay read-only unless a protected capability grants them.",
+        "cgel: governance bundle sealed (%d files). Changing any of them "
+        "mid-task moves the task to BLOCKED." % len(bundle["members"]),
+    )
+
+
+# ------------------------------------------------------- evidence pipeline
+
+def _bundle_changed(root, task):
+    """True if the governance bundle moved after seal (task goes BLOCKED)."""
+    sealed_bundle = (task.get("sealed") or {}).get("governance_bundle")
+    if not sealed_bundle:
+        return False
+    current = C.governance_bundle(root)
+    if current["digest"] == sealed_bundle["digest"]:
+        return False
+    for change in C.bundle_diff(sealed_bundle.get("members"), current["members"])[:20]:
+        print("  bundle %s" % change, file=sys.stderr)
+    C.set_blocked(root, task["task_id"], "sealed-guidebook-bundle-changed")
+    return True
+
+
+_FAIL_LINE = re.compile(r"(fail|error|assert|panic|exception)", re.I)
+_KIND_BY_CHECK = {
+    "test": "test_assertion",
+    "build": "build",
+    "compile": "compile",
+    "lint": "lint",
+    "typecheck": "typecheck",
+    "security": "security",
+    "eval": "test_assertion",
+}
+
+
+def _classify_failure(check, exit_code, timed_out, output):
+    if timed_out:
+        kind = "timeout"
+    elif exit_code == 127:
+        kind = "command_unavailable"
+    elif exit_code == 126:
+        kind = "permission_denied"
+    else:
+        kind = _KIND_BY_CHECK.get(check.get("kind"), "unknown")
+    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+    matched = [ln for ln in lines if _FAIL_LINE.search(ln)]
+    subject = (matched[0] if matched else (lines[-1] if lines else ""))[:160]
+    normalized = re.sub(r"\d+", "N", "\n".join(matched[:10]).lower())
+    fingerprint = (
+        C.sha256_bytes(normalized.encode("utf-8"))[:23] if normalized else None
+    )
+    return kind, subject, fingerprint
+
+
+def _summarize(output, head=400, tail=900):
+    if len(output) <= head + tail:
+        return output
+    return (
+        output[:head]
+        + "\n... [%d bytes truncated] ...\n" % (len(output) - head - tail)
+        + output[-tail:]
+    )
+
+
+def cmd_verify(args):
+    root = require_repo_root()
+    task = C.load_state(root)
+    if task["lifecycle"] == "NO_TASK":
+        return fail("VERIFY DENIED — no sealed task")
+    if task["lifecycle"] == "BLOCKED":
+        return fail(
+            "VERIFY DENIED — task %s is BLOCKED (%s)"
+            % (task["task_id"], task["state"].get("blocked_reason", "?")),
+            "cgel: resolve the block first (reseal or user action).",
+        )
+    sealed = task["sealed"]
+    if not sealed.get("governance_bundle"):
+        return fail(
+            "VERIFY DENIED — task sealed before the evidence pipeline",
+            "cgel: close and reseal to bind a governance bundle.",
+        )
+    if _bundle_changed(root, task):
+        return fail(
+            "VERIFY BLOCKED — sealed-guidebook-bundle-changed",
+            "cgel: registry/rules/hooks/guidebook changed after seal; the "
+            "sealed measure is void and the task is BLOCKED.",
+            "cgel: reseal to adopt the new measure (`cgel summary` then "
+            "`cgel seal %s --digest <new>`), or close honestly." % task["task_id"],
+        )
+
+    registry, registry_digest = C.load_registry(root)
+    check = (registry.get("checks") or {}).get(args.check_id)
+    if not isinstance(check, dict) or not check.get("command"):
+        known = ", ".join(sorted((registry.get("checks") or {}).keys())) or "none"
+        return fail(
+            "VERIFY DENIED — unknown check '%s'" % args.check_id,
+            "cgel: registered checks: %s" % known,
+            "cgel: adding a check edits %s — a governance path; do it before "
+            "seal or via a modify-verification-registry task."
+            % C.REGISTRY_REL_PATH,
+        )
+
+    command = check["command"]
+    timeout = check.get("timeout_seconds", 600)
+    workdir = os.path.join(root, check.get("working_directory", "."))
+    want_exit = (check.get("success") or {}).get("exit_code", 0)
+    started = C.utc_now()
+    timed_out = False
+    try:
+        proc = subprocess.run(
+            command,
+            shell=True,
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        exit_code = proc.returncode
+        output = (proc.stdout or "") + (proc.stderr or "")
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        exit_code = None
+        output = "%s\n[timeout after %ss]" % (exc.stdout or "", timeout)
+    except OSError as exc:
+        timed_out = False
+        exit_code = 127
+        output = "spawn failed: %s" % exc
+
+    status = "pass" if (not timed_out and exit_code == want_exit) else "fail"
+    failure_kind = failure_subject = fingerprint = None
+    if status == "fail":
+        failure_kind, failure_subject, fingerprint = _classify_failure(
+            check, exit_code, timed_out, output
+        )
+
+    tdir = C.task_dir(root, task["task_id"])
+    record = {
+        "type": "evidence",
+        "check": {"id": args.check_id, "registry_digest": registry_digest},
+        "contract_digest": sealed["contract_digest"],
+        "governance_digest": sealed["governance_bundle"]["digest"],
+        "workspace": C.workspace_snapshot(root),
+        "edit_seq": C.count_edit_events(tdir),
+        "result": {
+            "status": status,
+            "exit_code": exit_code,
+            "failure_kind": failure_kind,
+            "failure_subject": failure_subject,
+            "diagnostic_fingerprint": fingerprint,
+        },
+        "output": {
+            "digest": C.sha256_bytes(output.encode("utf-8", "replace")),
+            "bytes": len(output),
+            "summary": _summarize(output),
+        },
+        "started_at": started,
+        "finished_at": C.utc_now(),
+    }
+    rec = C.chain_append(
+        os.path.join(tdir, C.EVIDENCE_FILE), record, C.chain_seed(task["task_id"])
+    )
+    line = "VERIFY %s check=%s exit=%s evidence=%s" % (
+        status.upper(),
+        args.check_id,
+        exit_code,
+        rec["chain"]["hash"][:19],
+    )
+    if status == "pass":
+        return ok(line)
+    tail_lines = output.splitlines()[-15:]
+    return fail(line, *tail_lines)
+
+
+def cmd_audit(_args):
+    root = require_repo_root()
+    task = C.load_state(root)
+    if task["lifecycle"] == "NO_TASK":
+        return fail("AUDIT DENIED — no current task")
+    task_id = task["task_id"]
+    tdir = C.task_dir(root, task_id)
+    seed = C.chain_seed(task_id)
+    problems, warnings = [], []
+
+    counts = {}
+    for name in (C.EVIDENCE_FILE, C.EVENTS_FILE, C.ITERATIONS_FILE, C.SEMANTIC_FILE):
+        chain_ok, count, error = C.chain_verify(os.path.join(tdir, name), seed)
+        counts[name] = count
+        if not chain_ok:
+            problems.append("%s: %s" % (name, error))
+
+    sealed = task["sealed"]
+    sealed_bundle = sealed.get("governance_bundle")
+    if sealed_bundle:
+        current = C.governance_bundle(root)
+        if current["digest"] != sealed_bundle["digest"]:
+            problems.append("governance bundle changed since seal")
+            for change in C.bundle_diff(
+                sealed_bundle.get("members"), current["members"]
+            )[:20]:
+                print("  bundle %s" % change, file=sys.stderr)
+    else:
+        warnings.append("sealed without a governance bundle (pre-Phase-1 seal)")
+
+    evidence = C.read_jsonl(os.path.join(tdir, C.EVIDENCE_FILE))
+    stale_seal = 0
+    for rec in evidence:
+        if rec.get("contract_digest") != sealed.get("contract_digest") or (
+            sealed_bundle
+            and rec.get("governance_digest") != sealed_bundle.get("digest")
+        ):
+            stale_seal += 1
+    if stale_seal:
+        warnings.append(
+            "%d evidence record(s) bound to an earlier seal (stale after reseal)"
+            % stale_seal
+        )
+
+    events = C.read_jsonl(os.path.join(tdir, C.EVENTS_FILE))
+    if evidence and not any(e.get("type") == "bash" for e in events):
+        warnings.append(
+            "no hook-observed `cgel` Bash events — evidence has no independent "
+            "anchor (expected when cgel runs outside Claude Code hooks)"
+        )
+
+    for warning in warnings:
+        print("  warn: %s" % warning, file=sys.stderr)
+    if problems:
+        return fail("AUDIT FAIL — " + "; ".join(problems))
+    return ok(
+        "AUDIT OK — evidence=%d events=%d chain=intact bundle=%s warnings=%d"
+        % (
+            counts[C.EVIDENCE_FILE],
+            counts[C.EVENTS_FILE],
+            "unchanged" if sealed_bundle else "absent",
+            len(warnings),
+        )
+    )
+
+
+def _pass_problems(root, task):
+    """Everything that must hold before a PASS terminal status (§15.3)."""
+    if task["lifecycle"] == "BLOCKED":
+        return [
+            "task is BLOCKED (%s) — resolve before PASS"
+            % task["state"].get("blocked_reason", "?")
+        ]
+    sealed = task["sealed"]
+    bundle = sealed.get("governance_bundle")
+    if not bundle:
+        return ["task sealed before the evidence pipeline — reseal required"]
+    if _bundle_changed(root, task):
+        return ["sealed-guidebook-bundle-changed — task moved to BLOCKED; reseal"]
+
+    task_id = task["task_id"]
+    tdir = C.task_dir(root, task_id)
+    seed = C.chain_seed(task_id)
+    problems = []
+    for name in (C.EVIDENCE_FILE, C.EVENTS_FILE):
+        chain_ok, _, error = C.chain_verify(os.path.join(tdir, name), seed)
+        if not chain_ok:
+            problems.append("%s: %s (audit failed)" % (name, error))
+    if problems:
+        return problems
+
+    snapshot = C.workspace_snapshot(root)
+    edit_seq = C.count_edit_events(tdir)
+    latest = {}
+    for rec in C.read_jsonl(os.path.join(tdir, C.EVIDENCE_FILE)):
+        if rec.get("type") == "evidence":
+            latest[(rec.get("check") or {}).get("id")] = rec
+
+    for criterion in sealed["contract"]["acceptance_criteria"]:
+        checks = criterion.get("required_checks") or []
+        if not checks:
+            problems.append(
+                "%s: no required_checks — evidence-gated PASS is impossible; "
+                "close as ESCALATE (user verifies) or amend + reseal"
+                % criterion["id"]
+            )
+            continue
+        for check_id in checks:
+            where = "%s/%s" % (criterion["id"], check_id)
+            rec = latest.get(check_id)
+            if rec is None:
+                problems.append(
+                    "%s: no evidence — run `cgel verify %s`" % (where, check_id)
+                )
+            elif (rec.get("result") or {}).get("status") != "pass":
+                problems.append("%s: latest evidence is FAIL" % where)
+            elif rec.get("contract_digest") != sealed["contract_digest"] or rec.get(
+                "governance_digest"
+            ) != bundle["digest"]:
+                problems.append(
+                    "%s: evidence bound to a different seal — re-verify" % where
+                )
+            elif (rec.get("workspace") or {}).get("diff_digest") != snapshot[
+                "diff_digest"
+            ]:
+                problems.append(
+                    "%s: evidence stale — workspace changed after it was "
+                    "recorded; re-verify" % where
+                )
+            elif rec.get("edit_seq") != edit_seq:
+                problems.append(
+                    "%s: evidence stale — edits recorded after it; re-verify"
+                    % where
+                )
+
+    requirement = sealed.get("semantic_verification") or {}
+    if requirement.get("required"):
+        semantic = [
+            r
+            for r in C.read_jsonl(os.path.join(tdir, C.SEMANTIC_FILE))
+            if r.get("type") == "semantic"
+        ]
+        latest = semantic[-1] if semantic else None
+        why = ", ".join(requirement.get("reasons", []))
+        if latest is None:
+            problems.append(
+                "semantic verification required (%s) — run the cgel:verifier "
+                "subagent and record findings via `cgel semantic record`" % why
+            )
+        elif (
+            latest.get("contract_digest") != sealed["contract_digest"]
+            or latest.get("governance_digest") != bundle["digest"]
+        ):
+            problems.append(
+                "semantic findings bound to a different seal — re-run the verifier"
+            )
+        elif (latest.get("workspace") or {}).get("diff_digest") != snapshot[
+            "diff_digest"
+        ] or latest.get("edit_seq") != edit_seq:
+            problems.append(
+                "semantic findings stale — workspace changed after the verifier "
+                "ran; re-run it"
+            )
+        elif latest.get("blocking_count", 0) > 0:
+            problems.append(
+                "%d blocking semantic finding(s) — fix them, or challenge once "
+                "with evidence; unresolved disagreement is ESCALATE, never a "
+                "silent override" % latest["blocking_count"]
+            )
+    return problems
+
+
+# ----------------------------------------------------------- semantic layer
+
+def cmd_rules(_args):
+    root = require_repo_root()
+    rules = C.load_semantic_rules(root)
+    for rule in sorted(rules.values(), key=lambda r: r["id"]):
+        print(
+            "%s%s — %s (%s%s)"
+            % (
+                rule["id"],
+                " [BLOCKING]" if rule["blocking"] else "",
+                rule["title"],
+                rule["source"],
+                ", applies: %s" % ", ".join(rule["applies_to"])
+                if rule["applies_to"]
+                else "",
+            ),
+            file=sys.stderr,
+        )
+    blocking = sum(1 for r in rules.values() if r["blocking"])
+    return ok("RULES OK — %d rule(s), %d blocking" % (len(rules), blocking))
+
+
+def cmd_semantic(args):
+    if args.semantic_command != "record":
+        print("ERROR usage")
+        return 3
+    root = require_repo_root()
+    task = C.load_state(root)
+    if task["lifecycle"] == "NO_TASK":
+        return fail("SEMANTIC DENIED — no sealed task")
+    if task["lifecycle"] == "BLOCKED":
+        return fail(
+            "SEMANTIC DENIED — task is BLOCKED (%s)"
+            % task["state"].get("blocked_reason", "?")
+        )
+    sealed = task["sealed"]
+    if not sealed.get("governance_bundle"):
+        return fail("SEMANTIC DENIED — task sealed before the evidence pipeline")
+    if _bundle_changed(root, task):
+        return fail("SEMANTIC BLOCKED — sealed-guidebook-bundle-changed; reseal")
+
+    findings_path = args.file or os.path.join(root, ".task", "findings.json")
+    try:
+        payload = C.load_json(findings_path)
+    except FileNotFoundError:
+        return fail(
+            "SEMANTIC DENIED — no findings file",
+            "cgel: expected %s — the main agent writes the verifier "
+            "subagent's JSON there." % findings_path,
+        )
+    except Exception as exc:
+        return fail("SEMANTIC DENIED — findings file is not valid JSON: %s" % exc)
+
+    findings = payload.get("findings") if isinstance(payload, dict) else None
+    if not isinstance(findings, list):
+        return fail(
+            "SEMANTIC DENIED — findings file must be "
+            '{"findings": [{rule_id, status, confidence, evidence, reason}]}'
+        )
+    rules = C.load_semantic_rules(root)
+    errors, clean = [], []
+    for idx, item in enumerate(findings):
+        if not isinstance(item, dict):
+            errors.append("findings[%d]: must be an object" % idx)
+            continue
+        rule_id = item.get("rule_id")
+        if rule_id not in rules:
+            errors.append("findings[%d]: unknown rule_id %r" % (idx, rule_id))
+            continue
+        status = item.get("status")
+        if status not in ("pass", "fail"):
+            errors.append("findings[%d]: status must be pass|fail" % idx)
+            continue
+        confidence = item.get("confidence", 1.0)
+        if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+            errors.append("findings[%d]: confidence must be 0..1" % idx)
+            continue
+        clean.append(
+            {
+                "rule_id": rule_id,
+                "status": status,
+                "confidence": confidence,
+                "evidence": item.get("evidence") or [],
+                "reason": (item.get("reason") or "")[:500],
+                "blocking_rule": rules[rule_id]["blocking"],
+            }
+        )
+    if errors:
+        for error in errors:
+            print("  - %s" % error, file=sys.stderr)
+        return fail("SEMANTIC DENIED — %d schema error(s)" % len(errors))
+
+    blocking_count = sum(
+        1 for f in clean if f["status"] == "fail" and f["blocking_rule"]
+    )
+    tdir = C.task_dir(root, task["task_id"])
+    record = {
+        "type": "semantic",
+        "verifier": (payload.get("verifier") if isinstance(payload, dict) else None)
+        or "verifier",
+        "findings": clean,
+        "blocking_count": blocking_count,
+        "contract_digest": sealed["contract_digest"],
+        "governance_digest": sealed["governance_bundle"]["digest"],
+        "workspace": C.workspace_snapshot(root),
+        "edit_seq": C.count_edit_events(tdir),
+        "at": C.utc_now(),
+    }
+    C.chain_append(
+        os.path.join(tdir, C.SEMANTIC_FILE), record, C.chain_seed(task["task_id"])
+    )
+    line = "SEMANTIC %s — %d finding(s), %d blocking" % (
+        "FAIL" if blocking_count else "OK",
+        len(clean),
+        blocking_count,
+    )
+    if blocking_count:
+        for f in clean:
+            if f["status"] == "fail" and f["blocking_rule"]:
+                print("  blocking %s: %s" % (f["rule_id"], f["reason"]), file=sys.stderr)
+        return fail(line)
+    return ok(line)
+
+
+def _build_attestation(root, task):
+    """Sanitized: ids, statuses, digests — no raw output, no logs."""
+    sealed = task["sealed"]
+    state = task["state"]
+    tdir = C.task_dir(root, task["task_id"])
+    latest = {}
+    for rec in C.read_jsonl(os.path.join(tdir, C.EVIDENCE_FILE)):
+        if rec.get("type") == "evidence":
+            latest[(rec.get("check") or {}).get("id")] = rec
+    criteria = []
+    for criterion in sealed["contract"]["acceptance_criteria"]:
+        checks = []
+        for check_id in criterion.get("required_checks") or []:
+            rec = latest.get(check_id)
+            checks.append(
+                {
+                    "check_id": check_id,
+                    "status": (rec.get("result") or {}).get("status")
+                    if rec
+                    else "missing",
+                    "output_digest": (rec.get("output") or {}).get("digest")
+                    if rec
+                    else None,
+                    "recorded_at": rec.get("finished_at") if rec else None,
+                }
+            )
+        criteria.append({"id": criterion["id"], "checks": checks})
+    semantic = [
+        r
+        for r in C.read_jsonl(os.path.join(tdir, C.SEMANTIC_FILE))
+        if r.get("type") == "semantic"
+    ]
+    rule_findings = [
+        {"rule_id": f["rule_id"], "status": f["status"], "confidence": f["confidence"]}
+        for f in (semantic[-1]["findings"] if semantic else [])
+    ]
+    iterations = C.iteration_records(tdir)
+    decision_counts = {}
+    for rec in iterations:
+        if rec.get("type") == "iteration_decision":
+            key = rec.get("decision")
+            decision_counts[key] = decision_counts.get(key, 0) + 1
+    return {
+        "task_id": task["task_id"],
+        "terminal_status": state.get("terminal_status")
+        or state.get("lifecycle"),
+        "contract_digest": sealed["contract_digest"],
+        "governance_digest": (sealed.get("governance_bundle") or {}).get("digest"),
+        "semantic_verification": sealed.get("semantic_verification"),
+        "criteria": criteria,
+        "rule_findings": rule_findings,
+        "iterations": {
+            "opened": sum(
+                1 for r in iterations if r.get("type") == "iteration_open"
+            ),
+            "decisions": decision_counts,
+        },
+        "evidence_chain_head": C.chain_head(os.path.join(tdir, C.EVIDENCE_FILE)),
+        "events_chain_head": C.chain_head(os.path.join(tdir, C.EVENTS_FILE)),
+        "sealed_at": sealed.get("sealed_at"),
+        "created_at": C.utc_now(),
+    }
+
+
+def cmd_attest(_args):
+    root = require_repo_root()
+    task = C.load_state(root)
+    if task["lifecycle"] == "NO_TASK":
+        return fail("ATTEST DENIED — no current task")
+    attestation = _build_attestation(root, task)
+    tdir = C.task_dir(root, task["task_id"])
+    path = os.path.join(tdir, "attestation", "attestation.json")
+    C.atomic_write_json(path, attestation)
+    policy = (C.read_config(root).get("attestation") or {}).get("persistence", "local")
+    if policy != "local":
+        print(
+            "cgel: attestation policy '%s' is not implemented in the MVP — "
+            "wrote local only. `repository` is never a default (D-29)." % policy,
+            file=sys.stderr,
+        )
+    return ok("ATTEST OK — %s" % path)
+
+
+# ------------------------------------------------------------ loop control
+
+def _budgets(task):
+    budgets = task["sealed"]["contract"]["budgets"]
+    state = task["state"]
+    return (
+        budgets["max_iterations"] + state.get("budget_extra_iterations", 0),
+        budgets["max_replans"] + state.get("budget_extra_replans", 0),
+    )
+
+
+def cmd_iterate(args):
+    if args.iter_command == "open":
+        return cmd_iterate_open(args)
+    if args.iter_command == "decide":
+        return cmd_iterate_decide(args)
+    print("ERROR usage")
+    return 3
+
+
+def cmd_iterate_open(args):
+    root = require_repo_root()
+    task = C.load_state(root)
+    if task["lifecycle"] == "NO_TASK":
+        return fail("ITERATE DENIED — no sealed task")
+    if task["lifecycle"] == "BLOCKED":
+        return fail(
+            "ITERATE DENIED — task is BLOCKED (%s)"
+            % task["state"].get("blocked_reason", "?"),
+            "cgel: a user action unblocks it (`cgel unblock ...` or reseal).",
+        )
+    if not task["sealed"].get("governance_bundle"):
+        return fail("ITERATE DENIED — task sealed before the evidence pipeline")
+    if _bundle_changed(root, task):
+        return fail("ITERATE BLOCKED — sealed-guidebook-bundle-changed; reseal")
+    if not args.intended_change.strip():
+        return fail(
+            "ITERATE DENIED — --intended-change required",
+            "cgel: state the smallest change that tests your hypothesis.",
+        )
+
+    tdir = C.task_dir(root, task["task_id"])
+    records = C.iteration_records(tdir)
+    pending = C.open_iteration(records)
+    if pending:
+        return fail(
+            "ITERATE DENIED — iteration %d has no decision yet"
+            % pending["iteration"],
+            "cgel: close it first: `cgel iterate decide RETRY|REPLAN|"
+            "ROLLBACK_ITERATION`.",
+        )
+    max_iterations, _ = _budgets(task)
+    used = sum(1 for r in records if r.get("type") == "iteration_open")
+    if used >= max_iterations:
+        C.set_blocked(root, task["task_id"], "budget-exhausted-iterations")
+        return fail(
+            "ITERATE BLOCKED — iteration budget exhausted (%d/%d)"
+            % (used, max_iterations),
+            "cgel: budgets never widen silently. The USER can extend: "
+            "`cgel unblock --add-iterations <n>` — or close honestly "
+            "(ESCALATE/ABORT).",
+        )
+
+    number = 1 + max(
+        [r.get("iteration", 0) for r in records if r.get("type") == "iteration_open"]
+        or [0]
+    )
+    record = {
+        "type": "iteration_open",
+        "iteration": number,
+        "hypothesis": args.hypothesis.strip() or None,
+        "intended_change": args.intended_change.strip(),
+        "expected_checks": [
+            s.strip() for s in args.expected_checks.split(",") if s.strip()
+        ],
+        "at": C.utc_now(),
+    }
+    C.chain_append(
+        os.path.join(tdir, C.ITERATIONS_FILE), record, C.chain_seed(task["task_id"])
+    )
+    if task["lifecycle"] == "SEALED":
+        C.update_state(root, task["task_id"], lifecycle="ACTIVE", activated_at=C.utc_now())
+    return ok(
+        "ITERATE OPEN — iteration %d/%d task=%s"
+        % (number, max_iterations, task["task_id"])
+    )
+
+
+def cmd_iterate_decide(args):
+    root = require_repo_root()
+    task = C.load_state(root)
+    if task["lifecycle"] == "NO_TASK":
+        return fail("DECIDE DENIED — no sealed task")
+    if task["lifecycle"] == "BLOCKED":
+        return fail(
+            "DECIDE DENIED — task is BLOCKED (%s)"
+            % task["state"].get("blocked_reason", "?")
+        )
+    tdir = C.task_dir(root, task["task_id"])
+    records = C.iteration_records(tdir)
+    pending = C.open_iteration(records)
+    if not pending:
+        return fail(
+            "DECIDE DENIED — no open iteration",
+            "cgel: open one first: `cgel iterate open --intended-change ...`.",
+        )
+
+    signature = C.latest_failure_signature(tdir)
+    sig_key = C.signature_key(signature)
+    override = None
+    if args.override_reason.strip():
+        if not args.approved_by.strip():
+            return fail(
+                "DECIDE DENIED — failure override needs --approved-by",
+                "cgel: overrides are HUMAN_GATED; record who approved it. The "
+                "CLI cannot verify a human — the permission prompt is the "
+                "real anchor.",
+            )
+        override = {
+            "classify_as_new": True,
+            "reason": args.override_reason.strip(),
+            "approved_by": args.approved_by.strip(),
+        }
+
+    decisions = [r for r in records if r.get("type") == "iteration_decision"]
+    same_sig = [
+        d
+        for d in decisions
+        if sig_key is not None
+        and C.signature_key(d.get("failure_signature")) == sig_key
+        and not (d.get("failure_override") or {}).get("classify_as_new")
+    ]
+
+    if args.decision == "RETRY" and sig_key is not None and not override:
+        if any(d.get("decision") == "REPLAN" for d in same_sig):
+            return fail(
+                "DECIDE DENIED — same failure signature survived a REPLAN",
+                "cgel: guard default-same: this failure (%s / %s) already "
+                "outlived a replan. RETRY and REPLAN are exhausted — "
+                "ESCALATE or ABORT." % (signature["check_id"], signature["failure_kind"]),
+            )
+        if same_sig:
+            return fail(
+                "DECIDE DENIED — same failure signature seen again; RETRY forbidden",
+                "cgel: guard default-same: identical failure (%s / %s) after a "
+                "RETRY means the approach, not the execution, is wrong. "
+                "Decide REPLAN with a new hypothesis, or override with "
+                "user approval (--override-reason ... --approved-by ...)."
+                % (signature["check_id"], signature["failure_kind"]),
+            )
+
+    if args.decision == "REPLAN":
+        _, max_replans = _budgets(task)
+        replans_used = sum(1 for d in decisions if d.get("decision") == "REPLAN")
+        if replans_used >= max_replans:
+            C.set_blocked(root, task["task_id"], "budget-exhausted-replans")
+            return fail(
+                "DECIDE BLOCKED — replan budget exhausted (%d/%d)"
+                % (replans_used, max_replans),
+                "cgel: the USER can extend (`cgel unblock --add-replans <n>`) "
+                "or the task closes honestly (ESCALATE/ABORT).",
+            )
+
+    record = {
+        "type": "iteration_decision",
+        "iteration": pending["iteration"],
+        "decision": args.decision,
+        "failure_signature": signature,
+        "failure_override": override,
+        "lesson": args.lesson.strip() or None,
+        "at": C.utc_now(),
+    }
+    C.chain_append(
+        os.path.join(tdir, C.ITERATIONS_FILE), record, C.chain_seed(task["task_id"])
+    )
+    details = []
+    if args.decision == "ROLLBACK_ITERATION":
+        details.append(
+            "cgel: revert this iteration's patch yourself (git). CGEL never "
+            "touches your checkout."
+        )
+    return ok(
+        "DECIDE OK — iteration %d -> %s" % (pending["iteration"], args.decision),
+        *details
+    )
+
+
+def cmd_unblock(args):
+    root = require_repo_root()
+    task = C.load_state(root)
+    if task["lifecycle"] != "BLOCKED":
+        return fail("UNBLOCK DENIED — task is not BLOCKED")
+    reason = task["state"].get("blocked_reason", "?")
+    if reason == "sealed-guidebook-bundle-changed":
+        return fail(
+            "UNBLOCK DENIED — governance bundle changed; only a reseal fixes this",
+            "cgel: run `cgel summary` and `cgel seal %s --digest <new>` to "
+            "adopt the new measure." % task["task_id"],
+        )
+    if reason == "budget-exhausted-iterations" and args.add_iterations < 1:
+        return fail(
+            "UNBLOCK DENIED — blocked on iteration budget; pass --add-iterations <n>"
+        )
+    if reason == "budget-exhausted-replans" and args.add_replans < 1:
+        return fail(
+            "UNBLOCK DENIED — blocked on replan budget; pass --add-replans <n>"
+        )
+    state = task["state"]
+    fields = {
+        "lifecycle": state.get("lifecycle_before_block", "ACTIVE"),
+        "blocked_reason": None,
+        "unblocked_at": C.utc_now(),
+        "last_block_reason": reason,
+    }
+    if args.add_iterations:
+        fields["budget_extra_iterations"] = (
+            state.get("budget_extra_iterations", 0) + args.add_iterations
+        )
+    if args.add_replans:
+        fields["budget_extra_replans"] = (
+            state.get("budget_extra_replans", 0) + args.add_replans
+        )
+    C.update_state(root, task["task_id"], **fields)
+    return ok(
+        "UNBLOCK OK — %s -> %s (iterations +%d, replans +%d)"
+        % (task["task_id"], fields["lifecycle"], args.add_iterations, args.add_replans),
+        "cgel: unblock is a USER action. If the model ran this without the "
+        "user's say-so, that is a contract violation — tell the user.",
     )
 
 
@@ -270,36 +1099,66 @@ def cmd_status(_args):
                 "STATUS DRAFT task=%s (not sealed)" % contract["task"]["id"]
             )
         return ok("STATUS NO_TASK")
+    tdir = C.task_dir(root, task["task_id"])
+    evidence = [
+        r
+        for r in C.read_jsonl(os.path.join(tdir, C.EVIDENCE_FILE))
+        if r.get("type") == "evidence"
+    ]
+    extra = " evidence=%d" % len(evidence)
+    if task["lifecycle"] == "BLOCKED":
+        extra += " reason=%s" % task["state"].get("blocked_reason", "?")
     return ok(
-        "STATUS %s task=%s digest=%s"
-        % (task["lifecycle"], task["task_id"], task["state"].get("contract_digest"))
+        "STATUS %s task=%s digest=%s%s"
+        % (
+            task["lifecycle"],
+            task["task_id"],
+            task["state"].get("contract_digest"),
+            extra,
+        )
     )
 
 
 def cmd_close(args):
     root = require_repo_root()
-    if args.as_status == "PASS":
-        return fail(
-            "CLOSE DENIED — PASS requires verification evidence",
-            "cgel: the evidence pipeline arrives in Phase 1. Until then a "
-            "finished task closes as ESCALATE (hand to the user to verify).",
-        )
     task = C.load_state(root)
     if task["lifecycle"] == "NO_TASK":
         return fail("CLOSE DENIED — no active task")
+    if args.as_status == "PASS":
+        problems = _pass_problems(root, task)
+        if problems:
+            for problem in problems:
+                print("  - %s" % problem, file=sys.stderr)
+            return fail(
+                "CLOSE DENIED — PASS lacks evidence (%d problem(s))"
+                % len(problems)
+            )
     store = C.repo_state_dir(root)
-    state = dict(task["state"])
+    tdir = C.task_dir(root, task["task_id"])
+    state = dict(C.load_state(root)["state"])
     state["lifecycle"] = "TERMINAL"
     state["terminal_status"] = args.as_status
     state["closed_at"] = C.utc_now()
+    state["evidence_chain_head"] = C.chain_head(os.path.join(tdir, C.EVIDENCE_FILE))
     if args.reason:
         state["terminal_reason"] = args.reason
     C.atomic_write_json(os.path.join(store, task["task_id"], "state.json"), state)
+    details = []
+    if args.as_status == "PASS":
+        closed = dict(task)
+        closed["state"] = state
+        attestation_path = os.path.join(tdir, "attestation", "attestation.json")
+        try:
+            C.atomic_write_json(attestation_path, _build_attestation(root, closed))
+            details.append("cgel: attestation exported to %s" % attestation_path)
+        except Exception as exc:
+            C._debug("close:attest", exc)
+            details.append("cgel: attestation export failed (non-fatal)")
     try:
         os.unlink(os.path.join(store, "CURRENT"))
     except OSError as exc:
         C._debug("close:CURRENT", exc)
-    return ok("CLOSE OK — %s -> %s" % (task["task_id"], args.as_status))
+    return ok("CLOSE OK — %s -> %s" % (task["task_id"], args.as_status), *details)
 
 
 def main():
@@ -321,6 +1180,52 @@ def main():
 
     sub.add_parser("status", help="one-line lifecycle status")
 
+    p_verify = sub.add_parser(
+        "verify", help="run a registered check and record hash-chained evidence"
+    )
+    p_verify.add_argument("check_id")
+
+    p_iter = sub.add_parser("iterate", help="open or decide a loop iteration")
+    iter_sub = p_iter.add_subparsers(dest="iter_command")
+    p_open = iter_sub.add_parser("open", help="open the next iteration")
+    p_open.add_argument("--hypothesis", default="")
+    p_open.add_argument("--intended-change", dest="intended_change", default="")
+    p_open.add_argument(
+        "--expected-checks", dest="expected_checks", default="",
+        help="comma-separated check ids expected to move",
+    )
+    p_decide = iter_sub.add_parser("decide", help="close the open iteration")
+    p_decide.add_argument(
+        "decision", choices=["RETRY", "REPLAN", "ROLLBACK_ITERATION"]
+    )
+    p_decide.add_argument("--lesson", default="")
+    p_decide.add_argument("--override-reason", dest="override_reason", default="")
+    p_decide.add_argument("--approved-by", dest="approved_by", default="")
+
+    p_unblock = sub.add_parser(
+        "unblock", help="USER action: lift a budget/environment block"
+    )
+    p_unblock.add_argument("--add-iterations", dest="add_iterations", type=int, default=0)
+    p_unblock.add_argument("--add-replans", dest="add_replans", type=int, default=0)
+    p_unblock.add_argument("--reason", default="")
+
+    sub.add_parser("rules", help="list semantic rules parsed from docs/standards")
+
+    p_sem = sub.add_parser("semantic", help="record verifier findings")
+    sem_sub = p_sem.add_subparsers(dest="semantic_command")
+    p_sem_rec = sem_sub.add_parser(
+        "record", help="validate + chain a findings JSON file"
+    )
+    p_sem_rec.add_argument(
+        "--file", default="", help="findings JSON (default .task/findings.json)"
+    )
+
+    sub.add_parser("attest", help="export a sanitized attestation")
+
+    sub.add_parser(
+        "audit", help="verify evidence chains, seal bindings, governance bundle"
+    )
+
     p_close = sub.add_parser("close", help="close the active task")
     p_close.add_argument(
         "--as",
@@ -337,6 +1242,13 @@ def main():
         "summary": cmd_summary,
         "seal": cmd_seal,
         "status": cmd_status,
+        "verify": cmd_verify,
+        "audit": cmd_audit,
+        "iterate": cmd_iterate,
+        "unblock": cmd_unblock,
+        "rules": cmd_rules,
+        "semantic": cmd_semantic,
+        "attest": cmd_attest,
         "close": cmd_close,
     }
     if args.command not in handlers:

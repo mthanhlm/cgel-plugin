@@ -9,12 +9,22 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
 
 CONTRACT_REL_PATH = ".task/contract.json"
 DRAFT_EXEMPT_PATTERNS = [".task/**"]
+REGISTRY_REL_PATH = ".cgel/registry.json"
+EVIDENCE_FILE = "evidence.jsonl"
+EVENTS_FILE = "events.jsonl"
+ITERATIONS_FILE = "iterations.jsonl"
+SEMANTIC_FILE = "semantic.jsonl"
+
+# Directories whose contents form the sealed governance bundle (the measure).
+# Mirrors GOVERNANCE_PATH_CAPS: everything the gate protects gets digested.
+GOVERNANCE_BUNDLE_ROOTS = [".cgel", ".claude", "docs/standards", "docs/adr", "hooks"]
 
 # Ordered: first match wins. Paths that shape how a task is judged or gated.
 GOVERNANCE_PATH_CAPS = [
@@ -30,7 +40,8 @@ GOVERNANCE_PATH_CAPS = [
 ]
 
 TERMINAL_STATUSES = ("ROLLED_BACK", "ESCALATE", "ABORT")
-EDIT_LIFECYCLES = ("SEALED", "ACTIVE")  # ACTIVE arrives in Phase 2
+EDIT_LIFECYCLES = ("SEALED", "ACTIVE")  # BLOCKED does NOT allow edits
+TASK_LIFECYCLES = ("SEALED", "ACTIVE", "BLOCKED")  # a current task exists
 
 
 def _debug(context, exc):
@@ -290,7 +301,7 @@ def load_state(repo_root):
     """Current task state from the runtime state store.
 
     Returns {"lifecycle": "NO_TASK"} or
-    {"lifecycle": "SEALED"|"ACTIVE", "task_id", "sealed", "state"}.
+    {"lifecycle": "SEALED"|"ACTIVE"|"BLOCKED", "task_id", "sealed", "state"}.
     """
     store = repo_state_dir(repo_root)
     current_path = os.path.join(store, "CURRENT")
@@ -312,7 +323,7 @@ def load_state(repo_root):
         _debug("load_state:task", exc)
         return {"lifecycle": "NO_TASK"}
     lifecycle = state.get("lifecycle")
-    if lifecycle not in EDIT_LIFECYCLES:
+    if lifecycle not in TASK_LIFECYCLES:
         return {"lifecycle": "NO_TASK"}
     return {
         "lifecycle": lifecycle,
@@ -320,3 +331,376 @@ def load_state(repo_root):
         "sealed": sealed,
         "state": state,
     }
+
+
+def task_dir(repo_root, task_id):
+    return os.path.join(repo_state_dir(repo_root), task_id)
+
+
+def update_state(repo_root, task_id, **fields):
+    path = os.path.join(task_dir(repo_root, task_id), "state.json")
+    try:
+        state = load_json(path)
+    except Exception as exc:
+        _debug("update_state:load", exc)
+        state = {"task_id": task_id}
+    state.update(fields)
+    atomic_write_json(path, state)
+    return state
+
+
+def set_blocked(repo_root, task_id, reason):
+    fields = {
+        "lifecycle": "BLOCKED",
+        "blocked_reason": reason,
+        "blocked_at": utc_now(),
+    }
+    try:
+        state = load_json(os.path.join(task_dir(repo_root, task_id), "state.json"))
+        if state.get("lifecycle") in EDIT_LIFECYCLES:
+            fields["lifecycle_before_block"] = state["lifecycle"]
+    except Exception as exc:
+        _debug("set_blocked:prior", exc)
+    return update_state(repo_root, task_id, **fields)
+
+
+# ---------------------------------------------------------------- digests
+
+def sha256_bytes(data):
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path):
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
+    except OSError as exc:
+        _debug("sha256_file:%s" % path, exc)
+        return None
+
+
+def canonical_json(obj):
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+# ------------------------------------------------------- governance bundle
+
+def _iter_bundle_files(repo_root):
+    for root in GOVERNANCE_BUNDLE_ROOTS:
+        abs_root = os.path.join(repo_root, root)
+        if os.path.isfile(abs_root):
+            yield root
+            continue
+        for dirpath, dirnames, filenames in os.walk(abs_root):
+            dirnames[:] = sorted(
+                d for d in dirnames if d not in ("__pycache__", ".git")
+            )
+            for name in sorted(filenames):
+                if name.endswith((".pyc", ".tmp")) or name == ".DS_Store":
+                    continue
+                full = os.path.join(dirpath, name)
+                yield os.path.relpath(full, repo_root).replace(os.sep, "/")
+
+
+def governance_bundle(repo_root):
+    """Digest every gate-protected file: the sealed measure (contract §15.5)."""
+    members = []
+    for rel in sorted(set(_iter_bundle_files(repo_root))):
+        digest = sha256_file(os.path.join(repo_root, rel))
+        if digest:
+            members.append({"path": rel, "digest": digest})
+    bundle_digest = sha256_bytes(canonical_json(members).encode("utf-8"))
+    return {"digest": bundle_digest, "members": members}
+
+
+def bundle_diff(sealed_members, current_members):
+    sealed_map = {m["path"]: m["digest"] for m in sealed_members or []}
+    current_map = {m["path"]: m["digest"] for m in current_members or []}
+    changes = []
+    for path in sorted(set(sealed_map) | set(current_map)):
+        if path not in current_map:
+            changes.append("removed: %s" % path)
+        elif path not in sealed_map:
+            changes.append("added: %s" % path)
+        elif sealed_map[path] != current_map[path]:
+            changes.append("changed: %s" % path)
+    return changes
+
+
+# ------------------------------------------------------ workspace snapshot
+
+def _git(repo_root, *args):
+    return subprocess.run(
+        ["git"] + list(args),
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def workspace_snapshot(repo_root):
+    """base_revision + content digest of every path dirty vs HEAD.
+
+    Evidence bound to this digest goes stale on ANY workspace change,
+    including a commit (HEAD moves) — re-verify after committing.
+    """
+    try:
+        head_proc = _git(repo_root, "rev-parse", "HEAD")
+        status_proc = _git(repo_root, "status", "--porcelain", "--untracked-files=all")
+    except Exception as exc:
+        _debug("workspace_snapshot:git", exc)
+        return {"base_revision": "no-git", "diff_digest": "no-git"}
+    if status_proc.returncode != 0:
+        return {"base_revision": "no-git", "diff_digest": "no-git"}
+    head = head_proc.stdout.strip() if head_proc.returncode == 0 else "no-head"
+    entries = []
+    for line in status_proc.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:]
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        path = path.strip().strip('"')
+        if path == ".task" or path.startswith(".task/"):
+            continue
+        full = os.path.join(repo_root, path)
+        if os.path.isfile(full):
+            entries.append("%s:%s" % (path, sha256_file(full) or "unreadable"))
+        else:
+            entries.append("%s:deleted" % path)
+    canonical = head + "\n" + "\n".join(sorted(entries))
+    return {
+        "base_revision": head,
+        "diff_digest": sha256_bytes(canonical.encode("utf-8")),
+    }
+
+
+# ---------------------------------------------------------------- registry
+
+def load_registry(repo_root):
+    """Returns (registry dict, file digest). Missing file -> ({}, None)."""
+    path = os.path.join(repo_root, REGISTRY_REL_PATH)
+    try:
+        data = load_json(path)
+    except FileNotFoundError:
+        return {}, None
+    except Exception as exc:
+        _debug("load_registry", exc)
+        return {}, sha256_file(path)
+    return (data if isinstance(data, dict) else {}), sha256_file(path)
+
+
+# -------------------------------------------------------------- hash chain
+
+def chain_seed(task_id):
+    return "genesis:%s" % task_id
+
+
+def _record_hash(record):
+    body = dict(record)
+    chain = dict(body.get("chain") or {})
+    chain.pop("hash", None)
+    body["chain"] = chain
+    return sha256_bytes(canonical_json(body).encode("utf-8"))
+
+
+def _lock(fh):
+    try:
+        import fcntl
+
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except Exception as exc:  # non-POSIX: best-effort append
+        _debug("chain:lock", exc)
+
+
+def chain_append(path, record, seed):
+    """Append a hash-chained record. Tamper-EVIDENT only (Profile A)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a+", encoding="utf-8") as fh:
+        _lock(fh)
+        fh.seek(0)
+        prev = seed
+        last = None
+        for line in fh:
+            if line.strip():
+                last = line
+        if last is not None:
+            try:
+                prev = (json.loads(last).get("chain") or {}).get("hash") or seed
+            except Exception as exc:
+                _debug("chain_append:last", exc)
+        rec = dict(record)
+        rec["chain"] = {"prev": prev}
+        rec["chain"]["hash"] = _record_hash(rec)
+        fh.seek(0, os.SEEK_END)
+        fh.write(canonical_json(rec) + "\n")
+        return rec
+
+
+def chain_verify(path, seed):
+    """Returns (ok, record_count, error). Missing file -> (True, 0, None)."""
+    if not os.path.isfile(path):
+        return True, 0, None
+    prev = seed
+    count = 0
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for number, line in enumerate(fh, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    return False, count, "record %d: not valid JSON" % number
+                chain = rec.get("chain") or {}
+                if chain.get("prev") != prev:
+                    return False, count, "record %d: chain broken (prev mismatch)" % number
+                if chain.get("hash") != _record_hash(rec):
+                    return False, count, "record %d: content does not match hash" % number
+                prev = chain["hash"]
+                count += 1
+    except OSError as exc:
+        return False, count, "unreadable: %s" % exc
+    return True, count, None
+
+
+def read_jsonl(path):
+    records = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except Exception as exc:
+                    _debug("read_jsonl:%s" % path, exc)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        _debug("read_jsonl:%s" % path, exc)
+    return records
+
+
+def chain_head(path):
+    records = read_jsonl(path)
+    if not records:
+        return None
+    return (records[-1].get("chain") or {}).get("hash")
+
+
+def count_edit_events(task_dir_path):
+    events = read_jsonl(os.path.join(task_dir_path, EVENTS_FILE))
+    return sum(1 for e in events if e.get("type") == "edit")
+
+
+# -------------------------------------------------------------- iterations
+
+def iteration_records(task_dir_path):
+    return read_jsonl(os.path.join(task_dir_path, ITERATIONS_FILE))
+
+
+def open_iteration(records):
+    """The latest iteration_open with no matching decision, or None."""
+    decided = {
+        r.get("iteration") for r in records if r.get("type") == "iteration_decision"
+    }
+    for record in reversed(records):
+        if (
+            record.get("type") == "iteration_open"
+            and record.get("iteration") not in decided
+        ):
+            return record
+    return None
+
+
+def latest_failure_signature(task_dir_path):
+    """Machine-observed signature of the most recent failing evidence."""
+    for rec in reversed(read_jsonl(os.path.join(task_dir_path, EVIDENCE_FILE))):
+        if rec.get("type") != "evidence":
+            continue
+        result = rec.get("result") or {}
+        if result.get("status") == "fail":
+            return {
+                "check_id": (rec.get("check") or {}).get("id"),
+                "failure_kind": result.get("failure_kind"),
+                "failure_subject": result.get("failure_subject"),
+                "diagnostic_fingerprint": result.get("diagnostic_fingerprint"),
+            }
+    return None
+
+
+def signature_key(signature):
+    """default-same guard compares kind + fingerprint, not free text."""
+    if not signature:
+        return None
+    return (
+        signature.get("check_id"),
+        signature.get("failure_kind"),
+        signature.get("diagnostic_fingerprint") or signature.get("failure_subject"),
+    )
+
+
+# ---------------------------------------------------------- semantic rules
+
+_RULE_HEAD_RE = re.compile(r"^##\s+([A-Z][A-Z0-9]*-\d+)\s*(?:—|–|-)\s*(.+?)\s*$")
+_RULE_FIELD_RE = re.compile(r"^([A-Za-z-]+):\s*(.+?)\s*$")
+
+
+def load_semantic_rules(repo_root):
+    """Parse docs/standards/*.md rule blocks (## RULE-ID — title). Returns
+    {rule_id: {id, title, blocking, applies_to, owner, source}}."""
+    rules = {}
+    base = os.path.join(repo_root, "docs", "standards")
+    if not os.path.isdir(base):
+        return rules
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames.sort()
+        for name in sorted(filenames):
+            if not name.endswith(".md"):
+                continue
+            source = os.path.relpath(os.path.join(dirpath, name), repo_root).replace(
+                os.sep, "/"
+            )
+            try:
+                with open(os.path.join(dirpath, name), encoding="utf-8") as fh:
+                    lines = fh.read().splitlines()
+            except OSError as exc:
+                _debug("load_semantic_rules:%s" % source, exc)
+                continue
+            current = None
+            for line in lines:
+                head = _RULE_HEAD_RE.match(line)
+                if head:
+                    current = {
+                        "id": head.group(1),
+                        "title": head.group(2),
+                        "blocking": False,
+                        "applies_to": [],
+                        "owner": None,
+                        "source": source,
+                    }
+                    rules[current["id"]] = current
+                    continue
+                if line.startswith("#"):
+                    current = None
+                    continue
+                if current is None:
+                    continue
+                field = _RULE_FIELD_RE.match(line)
+                if not field:
+                    continue
+                key, value = field.group(1).lower(), field.group(2)
+                if key == "blocking":
+                    current["blocking"] = value.strip().lower() in ("yes", "true")
+                elif key == "applies-to":
+                    current["applies_to"] = [
+                        s.strip() for s in value.split(",") if s.strip()
+                    ]
+                elif key == "owner":
+                    current["owner"] = value.strip()
+    return rules

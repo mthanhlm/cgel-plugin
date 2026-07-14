@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cgel.dev/schemas/attestation.schema.json",
+  "title": "CGEL Attestation (Phase 3)",
+  "description": "Sanitized, exportable task summary: ids, statuses, digests. No raw command output, no logs, no secrets. Persistence policy: local (default) | ci-artifact | pr-comment | repository — repository is never a default (D-29).",
+  "type": "object",
+  "required": ["task_id", "terminal_status", "contract_digest", "criteria"],
+  "properties": {
+    "task_id": {"type": "string"},
+    "terminal_status": {"type": "string"},
+    "contract_digest": {"type": "string"},
+    "governance_digest": {"type": ["string", "null"]},
+    "semantic_verification": {
+      "type": ["object", "null"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "reasons": {"type": "array", "items": {"type": "string"}},
+        "blocking_rule_ids": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "checks"],
+        "properties": {
+          "id": {"type": "string"},
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "check_id": {"type": "string"},
+                "status": {"enum": ["pass", "fail", "missing"]},
+                "output_digest": {"type": ["string", "null"]},
+                "recorded_at": {"type": ["string", "null"]}
+              }
+            }
+          }
+        }
+      }
+    },
+    "rule_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "rule_id": {"type": "string"},
+          "status": {"enum": ["pass", "fail"]},
+          "confidence": {"type": "number"}
+        }
+      }
+    },
+    "iterations": {
+      "type": "object",
+      "properties": {
+        "opened": {"type": "integer"},
+        "decisions": {"type": "object"}
+      }
+    },
+    "evidence_chain_head": {"type": ["string", "null"]},
+    "events_chain_head": {"type": ["string", "null"]},
+    "sealed_at": {"type": ["string", "null"]},
+    "created_at": {"type": "string"}
+  }
+}

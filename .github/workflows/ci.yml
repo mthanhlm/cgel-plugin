@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  # Every PR, so a contributor's first push gets feedback.
+  pull_request:
+  # And direct pushes, so the "main is green" badge is a claim about main
+  # rather than about whoever last remembered to run the suite locally.
+  push:
+    branches: [main]
+
+concurrency:
+  # github.ref is refs/heads/* or refs/pull/*/merge — not user-controlled.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Mirrors the preflight in the cgel-release skill. That checklist only
+  # binds whoever reads it; this job binds every push.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: JSON sanity
+        run: |
+          python3 -c "import json,glob; [json.load(open(f)) for f in ['hooks/hooks.json','.claude-plugin/plugin.json','.claude-plugin/marketplace.json']+sorted(glob.glob('schemas/*.json'))]"
+
+      - name: Byte-compile
+        run: python3 -m compileall -q scripts bin/cgel
+
+      # Discovery, never a hand-written module list: a list silently stops
+      # running the tests nobody remembered to add to it.
+      - name: Tests
+        working-directory: tests
+        run: python3 -m unittest discover -v

@@ -76,6 +76,86 @@ class GuardTestCase(unittest.TestCase):
         code, _, err = self.bash("CGEL_GIT=allow git reset --hard HEAD~1")
         self.assertEqual(code, 0, err)
 
+    # ------------------------------------------------- ai attribution
+
+    def test_co_author_trailer_blocked(self):
+        code, _, err = self.bash(
+            'git commit -m "fix: thing\n\n'
+            'Co-Authored-By: Claude <noreply@anthropic.com>"'
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("ai-attribution/co-author-trailer", err)
+
+    def test_co_author_trailer_heredoc_blocked(self):
+        code, _, err = self.bash(
+            "git commit -m \"$(cat <<'EOF'\nfix: thing\n\n"
+            "Co-authored-by: Claude Opus <noreply@anthropic.com>\nEOF\n)\""
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("ai-attribution", err)
+
+    def test_generated_with_footer_blocked(self):
+        code, _, err = self.bash(
+            'gh pr create --title "x" --body "does a thing\n\n'
+            '🤖 Generated with [Claude Code](https://claude.com/claude-code)"'
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("ai-attribution", err)
+
+    def test_robot_footer_without_claude_name_blocked(self):
+        code, _, err = self.bash('git commit -m "x\n\n🤖 Generated with some tool"')
+        self.assertEqual(code, 2)
+        self.assertIn("robot-footer", err)
+
+    def test_clean_commit_allowed(self):
+        code, _, err = self.bash('git commit -m "fix: correct the off-by-one"')
+        self.assertEqual(code, 0, err)
+
+    def test_legitimate_claude_mention_in_commit_allowed(self):
+        """The block is narrow by design: it targets the mechanical trailer /
+        footer, not the word. A repo may legitimately commit *about* Claude."""
+        for command in (
+            'git commit -m "docs: document Claude Code compatibility"',
+            'git commit -m "feat: add anthropic sdk client"',
+        ):
+            code, _, err = self.bash(command)
+            self.assertEqual(code, 0, "%s: %s" % (command, err))
+
+    def test_reading_attribution_allowed(self):
+        """Only authoring commands are gated — searching for a trailer is not
+        adding one."""
+        for command in (
+            'git log --grep="Co-Authored-By: Claude"',
+            'grep -rn "Generated with Claude Code" .',
+        ):
+            code, _, err = self.bash(command)
+            self.assertEqual(code, 0, "%s: %s" % (command, err))
+
+    def test_attribution_user_approval_prefix_allows(self):
+        code, _, err = self.bash(
+            'CGEL_GIT=allow git commit -m "x\n\nCo-Authored-By: Claude <n@a.com>"'
+        )
+        self.assertEqual(code, 0, err)
+
+    def test_attribution_kill_switch_config(self):
+        with open(
+            os.path.join(self.repo, ".cgel", "config.json"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write('{"ai_attribution_guard": "off"}')
+        code, _, err = self.bash(
+            'git commit -m "x\n\nCo-Authored-By: Claude <n@a.com>"'
+        )
+        self.assertEqual(code, 0, err)
+
+    def test_attribution_kill_switch_does_not_disable_safety_rules(self):
+        with open(
+            os.path.join(self.repo, ".cgel", "config.json"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write('{"ai_attribution_guard": "off"}')
+        code, _, err = self.bash("git reset --hard HEAD~1")
+        self.assertEqual(code, 2)
+        self.assertIn("reset-hard", err)
+
     def test_malformed_stdin_fails_closed(self):
         code, _, err = run_hook("command_guard.py", None, raw_stdin="{oops")
         self.assertEqual(code, 2)

@@ -283,7 +283,33 @@ class LoopTestCase(unittest.TestCase):
         self.assertIn("fail-check", context)
         self.assertIn("iterations 1/3", context)
 
-    def test_session_start_silent_without_task(self):
+    def test_session_start_without_task_injects_only_standing_rules(self):
+        code, out, _ = run_hook(
+            "session_start.py",
+            {"hook_event_name": "SessionStart", "cwd": self.repo},
+            env=self.env,
+        )
+        self.assertEqual(code, 0)
+        context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("no AI attribution", context)
+        self.assertNotIn("CGEL resume", context)
+
+    def test_session_start_injects_attribution_rule_alongside_task(self):
+        self.seal()
+        code, out, err = run_hook(
+            "session_start.py",
+            {"hook_event_name": "SessionStart", "cwd": self.repo},
+            env=self.env,
+        )
+        self.assertEqual(code, 0, err)
+        context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("no AI attribution", context)
+        self.assertIn("CGEL resume", context)
+
+    def test_session_start_attribution_rule_kill_switch(self):
+        C_path = os.path.join(self.repo, ".cgel", "config.json")
+        with open(C_path, "w", encoding="utf-8") as fh:
+            json.dump({"ai_attribution_guard": "off"}, fh)
         code, out, _ = run_hook(
             "session_start.py",
             {"hook_event_name": "SessionStart", "cwd": self.repo},

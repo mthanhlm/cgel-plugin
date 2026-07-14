@@ -61,6 +61,7 @@ design, debate rounds v0.1→v1.0). All four MVP phases are implemented:
 | Seal binds the exact contract the user saw | digest ceremony: `cgel summary` → user approval → `cgel seal <id> --digest sha256:...` | HUMAN_GATED via the Bash permission prompt |
 | User's uncommitted work is protected | dirty-tree check at seal (`--allow-dirty` only after explicit user confirmation) | EVIDENCE_GATED |
 | No destructive git commands | `PreToolUse` Bash guard (`scripts/command_guard.py`), fail-closed | guardrail on the command string |
+| No AI attribution in commits/PRs | `SessionStart` injects the standing rule (`scripts/session_start.py`); the Bash guard blocks a `git commit` / `gh pr create\|edit` whose text carries a `Co-Authored-By: Claude` trailer or a generated-with footer | guardrail on the command string |
 
 ## Explicit limitations (Profile A honesty)
 
@@ -79,6 +80,15 @@ Read this before trusting the gate:
   the model to ask first; the CLI cannot verify a human answered.
 - **The command guard is a regex guardrail**, evadable by indirection. It
   catches mistakes, not adversaries.
+- **The attribution block only sees the command string.** A message composed
+  in `$EDITOR` (`git commit` with no `-m`) or passed by file (`gh pr create
+  --body-file`, `git commit -F`) is out of reach — the text never appears in
+  the Bash command. The injected rule is what covers those; the block is the
+  backstop for the common inline case. It is also deliberately **narrow**: it
+  matches the mechanical trailer/footer, not the words "Claude"/"Anthropic",
+  so a repo can still legitimately commit *about* them (`docs: document
+  Claude Code compatibility` is allowed). The broader "don't mention an AI
+  tool at all" half of the rule is instruction-only.
 - **The hash chain is recomputable by the same principal.** A determined
   local process could rewrite `evidence.jsonl` and re-chain it. `cgel
   audit` catches accidents and naive edits; hard integrity needs Profile B
@@ -186,7 +196,13 @@ cgel unblock --add-iterations 2   # lift a budget block (USER decision)
 
 Kill switches: `CGEL_GATE=off`, `CGEL_GIT_GUARD=off` (env), or
 `.cgel/config.json` `{"gate": "off"}` / `{"git_guard": "off"}`. Per-command
-destructive-git override typed by the user: `CGEL_GIT=allow git ...`.
+destructive-git override typed by the user: `CGEL_GIT=allow git ...` — which
+also permits an attributed commit, if the user genuinely wants one.
+
+The no-AI-attribution rule (injected instruction + commit/PR block) is on by
+default in every CGEL project, task or not. Turn off just that rule with
+`.cgel/config.json` `{"ai_attribution_guard": "off"}`; it leaves the
+destructive-command rules intact.
 
 State lives in the **CGEL runtime state store**
 (`$XDG_STATE_HOME/cgel/<repo-id>/` or `%LOCALAPPDATA%\cgel\...`; override

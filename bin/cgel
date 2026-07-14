@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+"""cgel — CGEL Phase 0 CLI: contract lifecycle (draft -> validate -> summary
+-> seal -> status -> close).
+
+Output contract: one machine-parseable decision line on stdout (last line);
+details and failures on stderr. Exit 0 = ok, 1 = denied/failed, 3 = usage.
+
+Profile A honesty: this CLI packages logic; it is NOT a trust boundary.
+The human anchor for a seal is the user approving the exact `cgel seal
+<task> --digest sha256:...` command (permission prompt or typing it).
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(PLUGIN_ROOT, "scripts"))
+import cgel_common as C
+
+
+def fail(line, *details):
+    for detail in details:
+        print(detail, file=sys.stderr)
+    print(line)
+    return 1
+
+
+def ok(line, *details):
+    for detail in details:
+        print(detail, file=sys.stderr)
+    print(line)
+    return 0
+
+
+def require_repo_root():
+    root = C.find_repo_root(os.getcwd())
+    if not root:
+        print(
+            "cgel: no .cgel/ directory found in this directory or any parent. "
+            "Run `cgel init` at the project root first.",
+            file=sys.stderr,
+        )
+        print("ERROR no-cgel-project")
+        sys.exit(3)
+    return root
+
+
+def load_contract(repo_root):
+    path = os.path.join(repo_root, C.CONTRACT_REL_PATH)
+    try:
+        return C.load_json(path), path
+    except FileNotFoundError:
+        return None, path
+    except Exception as exc:
+        print("cgel: %s is not valid JSON: %s" % (path, exc), file=sys.stderr)
+        return None, path
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_init(_args):
+    root = os.getcwd()
+    cgel_dir = os.path.join(root, ".cgel")
+    task_dir = os.path.join(root, ".task")
+    already = os.path.isdir(cgel_dir)
+    os.makedirs(cgel_dir, exist_ok=True)
+    os.makedirs(task_dir, exist_ok=True)
+    config_path = os.path.join(cgel_dir, "config.json")
+    if not os.path.isfile(config_path):
+        C.atomic_write_json(config_path, {"gate": "on", "git_guard": "on"})
+    gitignore = os.path.join(root, ".gitignore")
+    try:
+        existing = ""
+        if os.path.isfile(gitignore):
+            with open(gitignore, encoding="utf-8") as fh:
+                existing = fh.read()
+        if ".task/" not in existing.splitlines():
+            with open(gitignore, "a", encoding="utf-8") as fh:
+                if existing and not existing.endswith("\n"):
+                    fh.write("\n")
+                fh.write(".task/\n")
+    except Exception as exc:
+        C._debug("init:gitignore", exc)
+        print("cgel: could not update .gitignore — add '.task/' manually.", file=sys.stderr)
+    if already:
+        return ok("INIT OK — already initialized (gate on)")
+    return ok("INIT OK — .cgel/ created, .task/ created, gate on")
+
+
+def cmd_validate(_args):
+    root = require_repo_root()
+    contract, path = load_contract(root)
+    if contract is None:
+        return fail(
+            "VALIDATE FAIL — no readable contract",
+            "cgel: expected a contract draft at %s" % path,
+        )
+    errors = C.validate_contract(contract)
+    if errors:
+        for error in errors:
+            print("  - %s" % error, file=sys.stderr)
+        return fail("VALIDATE FAIL — %d error(s)" % len(errors))
+    task_id = contract["task"]["id"]
+    return ok("VALIDATE PASS — %s digest %s" % (task_id, C.contract_digest(contract)))
+
+
+def cmd_summary(_args):
+    root = require_repo_root()
+    contract, path = load_contract(root)
+    if contract is None:
+        return fail("SUMMARY FAIL — no readable contract", "cgel: expected %s" % path)
+    errors = C.validate_contract(contract)
+    if errors:
+        for error in errors:
+            print("  - %s" % error, file=sys.stderr)
+        return fail("SUMMARY FAIL — contract invalid (%d error(s))" % len(errors))
+
+    c = C.normalize_contract(contract)
+    digest = C.contract_digest(contract)
+    seal_mode = "human" if c["protected_capabilities"] else "auto"
+
+    lines = [
+        "Task: %s (%s)" % (c["task"]["id"], c["task"]["type"]),
+        "Goal: %s" % c["task"]["goal"],
+        "Risk: %s" % c["risk"]["level"],
+        "Allowed scope:",
+    ]
+    lines += ["  - %s" % p for p in c["scope"]["allowed"]]
+    if c["scope"]["forbidden"]:
+        lines.append("Forbidden paths:")
+        lines += ["  - %s" % p for p in c["scope"]["forbidden"]]
+    lines.append("Protected capabilities: %s" % (
+        ", ".join(c["protected_capabilities"]) or "none"
+    ))
+    lines.append("Acceptance criteria:")
+    for item in c["acceptance_criteria"]:
+        checks = ", ".join(item.get("required_checks", [])) or "none listed"
+        lines.append("  - %s: %s (checks: %s)" % (item["id"], item["description"], checks))
+    lines.append("Budgets: %d iterations, %d replans" % (
+        c["budgets"]["max_iterations"], c["budgets"]["max_replans"]
+    ))
+    lines.append("Exceptions: %s" % (json.dumps(c["exceptions"]) if c["exceptions"] else "none"))
+    for line in lines:
+        print(line, file=sys.stderr)
+
+    return ok("SUMMARY %s digest=%s seal_mode=%s" % (c["task"]["id"], digest, seal_mode))
+
+
+def _dirty_paths_intersecting_scope(repo_root, allowed_patterns):
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception as exc:
+        C._debug("seal:git-status", exc)
+        return []
+    if proc.returncode != 0:
+        return []  # not a git repo — nothing to protect via git
+    hits = []
+    for line in proc.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:]
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        path = path.strip().strip('"')
+        if path.startswith(".task/"):
+            continue
+        if C.path_matches(path, allowed_patterns):
+            hits.append(path)
+    return hits
+
+
+def cmd_seal(args):
+    root = require_repo_root()
+    contract, path = load_contract(root)
+    if contract is None:
+        return fail("SEAL DENIED — no readable contract", "cgel: expected %s" % path)
+    errors = C.validate_contract(contract)
+    if errors:
+        for error in errors:
+            print("  - %s" % error, file=sys.stderr)
+        return fail("SEAL DENIED — contract invalid (%d error(s))" % len(errors))
+
+    c = C.normalize_contract(contract)
+    task_id = c["task"]["id"]
+    if args.task_id != task_id:
+        return fail(
+            "SEAL DENIED — task id mismatch",
+            "cgel: contract is %s, you asked to seal %s" % (task_id, args.task_id),
+        )
+
+    digest = C.contract_digest(contract)
+    if args.digest != digest:
+        return fail(
+            "SEAL DENIED — digest mismatch",
+            "cgel: the contract changed after the summary was shown.",
+            "cgel: current digest is %s" % digest,
+            "cgel: re-run `cgel summary`, show it to the user, and seal the new digest.",
+        )
+
+    current = C.load_state(root)
+    if current["lifecycle"] in C.EDIT_LIFECYCLES:
+        return fail(
+            "SEAL DENIED — task %s is already active" % current["task_id"],
+            "cgel: close it first (`cgel close --as ...`).",
+        )
+
+    dirty = _dirty_paths_intersecting_scope(root, c["scope"]["allowed"])
+    if dirty and not args.allow_dirty:
+        for hit in dirty[:20]:
+            print("  dirty: %s" % hit, file=sys.stderr)
+        return fail(
+            "SEAL DENIED — uncommitted changes intersect scope.allowed",
+            "cgel: these files are the user's work. Ask the user; with their "
+            "explicit confirmation reseal with --allow-dirty.",
+        )
+
+    seal_mode = "human" if c["protected_capabilities"] else "auto"
+    store = C.repo_state_dir(root)
+    task_dir = os.path.join(store, task_id)
+    C.atomic_write_json(
+        os.path.join(task_dir, "sealed_task.json"),
+        {
+            "task_id": task_id,
+            "contract": c,
+            "contract_digest": digest,
+            "seal_mode": seal_mode,
+            "sealed_at": C.utc_now(),
+            "dirty_ack": bool(dirty),
+            # Phase 1 will add: governance_bundle digests, workspace revision
+            "governance_bundle": None,
+        },
+    )
+    C.atomic_write_json(
+        os.path.join(task_dir, "state.json"),
+        {
+            "task_id": task_id,
+            "lifecycle": "SEALED",
+            "contract_digest": digest,
+            "sealed_at": C.utc_now(),
+        },
+    )
+    current_path = os.path.join(store, "CURRENT")
+    os.makedirs(store, exist_ok=True)
+    with open(current_path, "w", encoding="utf-8") as fh:
+        fh.write(task_id + "\n")
+
+    return ok(
+        "SEAL OK — %s digest=%s mode=%s" % (task_id, digest, seal_mode),
+        "cgel: edits are now allowed inside scope.allowed. Governance paths "
+        "stay read-only unless a protected capability grants them.",
+    )
+
+
+def cmd_status(_args):
+    root = require_repo_root()
+    task = C.load_state(root)
+    if task["lifecycle"] == "NO_TASK":
+        contract, _ = load_contract(root)
+        if contract is not None and not C.validate_contract(contract):
+            return ok(
+                "STATUS DRAFT task=%s (not sealed)" % contract["task"]["id"]
+            )
+        return ok("STATUS NO_TASK")
+    return ok(
+        "STATUS %s task=%s digest=%s"
+        % (task["lifecycle"], task["task_id"], task["state"].get("contract_digest"))
+    )
+
+
+def cmd_close(args):
+    root = require_repo_root()
+    if args.as_status == "PASS":
+        return fail(
+            "CLOSE DENIED — PASS requires verification evidence",
+            "cgel: the evidence pipeline arrives in Phase 1. Until then a "
+            "finished task closes as ESCALATE (hand to the user to verify).",
+        )
+    task = C.load_state(root)
+    if task["lifecycle"] == "NO_TASK":
+        return fail("CLOSE DENIED — no active task")
+    store = C.repo_state_dir(root)
+    state = dict(task["state"])
+    state["lifecycle"] = "TERMINAL"
+    state["terminal_status"] = args.as_status
+    state["closed_at"] = C.utc_now()
+    if args.reason:
+        state["terminal_reason"] = args.reason
+    C.atomic_write_json(os.path.join(store, task["task_id"], "state.json"), state)
+    try:
+        os.unlink(os.path.join(store, "CURRENT"))
+    except OSError as exc:
+        C._debug("close:CURRENT", exc)
+    return ok("CLOSE OK — %s -> %s" % (task["task_id"], args.as_status))
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="cgel", add_help=True)
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("init", help="create .cgel/ and .task/ (activates the gate)")
+    sub.add_parser("validate", help="validate .task/contract.json")
+    sub.add_parser("summary", help="print normalized contract summary + digest")
+
+    p_seal = sub.add_parser("seal", help="seal the drafted contract")
+    p_seal.add_argument("task_id")
+    p_seal.add_argument("--digest", required=True, help="exact digest from `cgel summary`")
+    p_seal.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="user-confirmed: task may build on uncommitted changes in scope",
+    )
+
+    sub.add_parser("status", help="one-line lifecycle status")
+
+    p_close = sub.add_parser("close", help="close the active task")
+    p_close.add_argument(
+        "--as",
+        dest="as_status",
+        required=True,
+        choices=["ROLLED_BACK", "ESCALATE", "ABORT", "PASS"],
+    )
+    p_close.add_argument("--reason", default="")
+
+    args = parser.parse_args()
+    handlers = {
+        "init": cmd_init,
+        "validate": cmd_validate,
+        "summary": cmd_summary,
+        "seal": cmd_seal,
+        "status": cmd_status,
+        "close": cmd_close,
+    }
+    if args.command not in handlers:
+        parser.print_usage(sys.stderr)
+        print("ERROR usage")
+        return 3
+    return handlers[args.command](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

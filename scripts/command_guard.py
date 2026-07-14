@@ -1,0 +1,116 @@
+"""CGEL PreToolUse guard for Bash — blocks destructive commands.
+
+Safety gate -> fails CLOSED: unreadable payload blocks the call (exit 2).
+This is a guardrail on the raw command string, not a sandbox; indirect
+mutations (scripts, interpreters) are out of reach on Profile A hosts.
+
+Bypass, per command, typed by the USER: prefix `CGEL_GIT=allow `.
+Kill switches: env CGEL_GIT_GUARD=off, or .cgel/config.json
+{"git_guard": "off"}.
+"""
+
+import json
+import os
+import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cgel_common as C
+
+RULES = [
+    (
+        "force-push",
+        re.compile(
+            r"git\s+push\s+(?:[^\n|;&]*\s)?(?:--force\b(?!-with-lease)|-f\b)"
+        ),
+        "git push --force rewrites remote history (--force-with-lease is allowed)",
+    ),
+    (
+        "remote-branch-delete",
+        re.compile(r"git\s+push\s+[^\n|;&]*(--delete\b|\s:\S+)"),
+        "deleting a remote branch",
+    ),
+    (
+        "reset-hard",
+        re.compile(r"git\s+reset\s+[^\n|;&]*--hard\b"),
+        "git reset --hard discards local work",
+    ),
+    (
+        "clean-force",
+        re.compile(r"git\s+clean\s+[^\n|;&]*-[A-Za-z]*f"),
+        "git clean -f deletes untracked files",
+    ),
+    (
+        "checkout-dot",
+        re.compile(r"git\s+checkout\s+(--\s+)?\.(\s|$|;|\|)"),
+        "git checkout . discards uncommitted changes",
+    ),
+    (
+        "restore-worktree",
+        re.compile(r"git\s+restore\s+(?![^\n|;&]*--staged)[^\n|;&]*(\s|^)\.(\s|$|;|\|)"),
+        "git restore . discards uncommitted changes",
+    ),
+    (
+        "branch-force-delete",
+        re.compile(r"git\s+branch\s+[^\n|;&]*-D\b"),
+        "git branch -D discards unmerged work",
+    ),
+    (
+        "stash-drop",
+        re.compile(r"git\s+stash\s+(drop|clear)\b"),
+        "dropping stashes discards work",
+    ),
+]
+
+APPROVAL_PREFIX = re.compile(r"^\s*CGEL_GIT=allow\s")
+
+
+def main():
+    try:
+        payload = json.load(sys.stdin)
+    except Exception as exc:
+        C._debug("command_guard:stdin", exc)
+        print(
+            "CGEL guard: unreadable hook payload — blocking as a precaution "
+            "(safety gates fail closed).",
+            file=sys.stderr,
+        )
+        return 2
+
+    if payload.get("tool_name") != "Bash":
+        return 0
+    if os.environ.get("CGEL_GIT_GUARD", "").lower() == "off":
+        return 0
+
+    command = (payload.get("tool_input") or {}).get("command") or ""
+
+    cwd = payload.get("cwd") or os.getcwd()
+    repo_root = C.find_repo_root(cwd)
+    if not repo_root:
+        return 0  # not a CGEL-enabled project
+    if C.read_config(repo_root).get("git_guard") == "off":
+        return 0
+
+    if APPROVAL_PREFIX.match(command):
+        return 0  # explicit per-command approval typed by the user
+
+    for rule_id, pattern, reason in RULES:
+        if pattern.search(command):
+            print(
+                "CGEL guard [%s]: blocked — %s. If the user explicitly wants "
+                "this, they can rerun it prefixed with `CGEL_GIT=allow `."
+                % (rule_id, reason),
+                file=sys.stderr,
+            )
+            return 2
+
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:  # safety gate: fail closed
+        C._debug("command_guard:main", exc)
+        print("CGEL guard: internal error — blocking as a precaution.", file=sys.stderr)
+        sys.exit(2)

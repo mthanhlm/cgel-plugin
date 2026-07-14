@@ -1,0 +1,9 @@
+{
+  "name": "cgel",
+  "version": "0.1.0",
+  "description": "Contract-Gated Evidence Loop — Phase 0: task contracts with a seal ceremony, scope-gated edits, governance-path protection, and a destructive-command guard.",
+  "author": {
+    "name": "mthanhlm"
+  },
+  "license": "MIT"
+}

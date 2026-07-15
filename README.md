@@ -34,7 +34,8 @@ design, debate rounds v0.1→v1.0). All four MVP phases are implemented:
 
 | Invariant | Mechanism | Assurance (Profile A) |
 |---|---|---|
-| Every iteration is declared and decided | `cgel iterate open` (hypothesis + intended change) / `cgel iterate decide RETRY\|REPLAN\|ROLLBACK_ITERATION`; a second open without a decision is refused | EVIDENCE_GATED |
+| Every iteration is declared and decided | `cgel iterate open` (hypothesis + intended change) / `cgel iterate decide ADVANCE\|RETRY\|REPLAN\|ROLLBACK_ITERATION`; a second open without a decision is refused | EVIDENCE_GATED |
+| A success cannot be claimed by asserting it | `ADVANCE` is refused unless every `--expected-checks` entry of the iteration has fresh passing evidence — so it cannot carry a failed check past the default-same guard | EVIDENCE_GATED |
 | Budgets never widen silently | iteration/replan counts come from the chained store, limits from the sealed contract; exhaustion → BLOCKED; only `cgel unblock --add-*` (a USER action) extends | EVIDENCE_GATED |
 | Repeating the same failure is stopped by a machine | default-same guard compares recorded failure signatures (check id + kind + diagnostic fingerprint): same signature after RETRY forces REPLAN, after REPLAN forces ESCALATE/ABORT; overrides need `--approved-by` | EVIDENCE_GATED |
 | No silent stop mid-iteration | `Stop` hook blocks (exit 2) while an iteration is undecided — bounded to `stop_continuation_limit` (default 2) per task | GUIDANCE+bounded gate |
@@ -160,7 +161,7 @@ Recommended permission setup (makes the human gates real prompts):
 | `cgel validate` | schema-check `.task/contract.json` |
 | `cgel summary` | normalized contract summary + digest (show this to the user) |
 | `cgel seal <id> --digest <d>` | freeze contract + governance bundle; opens the edit gate |
-| `cgel iterate open/decide` | declare an iteration / record RETRY, REPLAN, ROLLBACK_ITERATION |
+| `cgel iterate open/decide` | declare an iteration / record ADVANCE, RETRY, REPLAN, ROLLBACK_ITERATION |
 | `cgel verify <check-id>` | run a registered check, record hash-chained evidence |
 | `cgel audit` | verify chains, seal bindings, governance bundle |
 | `cgel rules` | list semantic rules from `docs/standards/` |
@@ -188,7 +189,8 @@ cgel seal TASK-1 --digest sha256:...   # user approves; freezes contract + gover
 #   ... the loop (cgel:loop skill) ...
 cgel iterate open --hypothesis "H-1: ..." --intended-change "..." --expected-checks unit-tests
 cgel verify unit-tests            # runs the registered command, records chained evidence
-cgel iterate decide RETRY         # or REPLAN / ROLLBACK_ITERATION — guard + budgets enforced
+cgel iterate decide ADVANCE       # hypothesis held — needs fresh passing evidence for --expected-checks
+#   or RETRY / REPLAN / ROLLBACK_ITERATION — guard + budgets enforced
 cgel audit                        # AUDIT OK — evidence=N events=M chain=intact bundle=unchanged
 cgel status                       # STATUS ACTIVE task=TASK-1 ... evidence=N
 

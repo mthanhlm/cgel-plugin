@@ -28,6 +28,11 @@ real experiment.
 4. **VERIFY** — `cgel verify <check-id>` for the checks this iteration was
    supposed to move. Manual command runs are not evidence.
 5. **DECIDE** — close the iteration honestly:
+   - `cgel iterate decide ADVANCE --lesson "..."` — the hypothesis held; move
+     on. Costs no replan budget. Evidence-gated: refused unless every
+     `--expected-checks` entry has fresh passing evidence, and refused if the
+     iteration expected no checks. It is not a way past a failing check —
+     a failure decided as ADVANCE is a lie the store will catch.
    - `cgel iterate decide RETRY` — same plan, fix the execution.
      Forbidden when the failure signature repeats (see guard below).
    - `cgel iterate decide REPLAN --lesson "..."` — new hypothesis/plan;
@@ -35,6 +40,9 @@ real experiment.
    - `cgel iterate decide ROLLBACK_ITERATION` — this iteration made things
      worse; revert its patch yourself (git), CGEL never touches the
      checkout.
+
+   Pick the one that is true. RETRY on a success inflates the retry rate the
+   project measures itself by; ADVANCE on a failure is refused.
 
 ## The default-same guard
 

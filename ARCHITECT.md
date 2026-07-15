@@ -116,7 +116,7 @@ NO_TASK → DRAFT → SEALED → ACTIVE ⇄ BLOCKED → TERMINAL
 
 ### Decision vocabulary
 
-- **Iteration decisions:** `RETRY` (same plan, change the approach — forbidden when the failure signature repeats), `REPLAN` (new plan/hypothesis — mandatory when default-same triggers), `ROLLBACK_ITERATION` (revert the iteration's patch, keep the task).
+- **Iteration decisions:** `ADVANCE` (the hypothesis held — evidence-gated, see D-36), `RETRY` (same plan, change the approach — forbidden when the failure signature repeats), `REPLAN` (new plan/hypothesis — mandatory when default-same triggers), `ROLLBACK_ITERATION` (revert the iteration's patch, keep the task).
 - **Terminal statuses:** `PASS`, `ROLLED_BACK`, `ESCALATE`, `ABORT`.
 
 ### Pseudocode (control layer — `cgel`)
@@ -355,6 +355,15 @@ The cost has been stated and accepted:
 3. There can be no test asserting that CI runs exactly the checks in the registry (CI has no registry to compare against).
 
 Point 2 is a genuine contradiction with principle #3, not an implementation detail. It is recorded here so that a later reader still sees it — if one wishes to restore it, remove `.cgel/` from `GITIGNORE_ENTRIES` in `bin/cgel` and commit the registry again.
+
+**D-36 (post-v1.0 amendment — four gaps found by running CGEL on itself):** the first real dogfooding pass hit four places where the design's own prescribed path did not work, so that the honest move looked like an override. Overrides that are mandatory on the normal path stop being decisions and become noise, which is how a gate quietly dies.
+
+1. **`ADVANCE` joins the iteration decision vocabulary** (§15.3). There was no success-shaped decision, so a passing iteration had to be logged as `RETRY` ("same plan, change the approach") or spend `REPLAN` budget. The retry-rate metric of §15.10 was therefore counting successes as retries and measuring nothing. `ADVANCE` is **evidence-gated**: it is refused unless every `expected_checks` entry of the open iteration has fresh passing evidence bound to the current seal and workspace, and refused when the iteration declared no expected checks. This is not decoration — an ungated `ADVANCE` would be a hole straight through the default-same guard, letting a failed check be carried forward under a success-shaped label.
+2. **A task may reseal itself from `SEALED`/`ACTIVE`, not only from `BLOCKED`.** The task skill answers a wrongly-blocked path with "tell the user, amend the contract, and reseal", but the CLI refused to reseal an open task, so the prescribed escape hatch was reachable only by accident — when something else had already forced `BLOCKED`. Sealing a *different* task over an open one is still refused, and the exact-digest match and human `seal_mode` are unchanged: amendment stays a deliberate, re-approved act.
+3. **The dirty-tree check now distinguishes the task's own authorised work from the user's.** A reseal happens mid-flight, so the task's in-scope edits are necessarily uncommitted; counting them as "the user's work" made `--allow-dirty` mandatory on the one path the design prescribes. On reseal, paths already inside the *previously sealed* `scope.allowed` no longer block. Paths outside it still do, and a task's first seal is unchanged.
+4. **A `modify-governance` task can now finish cleanly.** This follows from (2) and (3); nothing about the guard itself was relaxed. **The `sealed-guidebook-bundle-changed → BLOCKED` rule is deliberately kept**: a task that edits the measure and keeps running would be grading itself against a yardstick it just wrote — principle #3 inverted. The reseal is where a human re-approves the new measure, and that is the point, not an obstacle. The fix was to make the recovery reachable, not to remove the guard.
+
+Also fixed while here: a reseal rewrote `state.json` wholesale and silently dropped `budget_extra_iterations` / `budget_extra_replans`, revoking budget the user had granted with `cgel unblock`. Budgets are the user's to widen (§15.1, principle 6); taking one back without asking is the same violation mirrored.
 
 ## 15.8 MVP implementation plan (walking skeleton)
 

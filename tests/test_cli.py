@@ -1,5 +1,6 @@
 """cgel CLI — subprocess tests: validate, summary, seal ceremony, close."""
 
+import copy
 import json
 import os
 import shutil
@@ -93,15 +94,31 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("SEAL DENIED", decision_line(out))
 
-    def test_seal_ok_then_double_seal_denied(self):
+    def test_reseal_of_the_same_task_is_the_amendment_path(self):
+        # The task skill tells the model to answer a blocked path with "amend
+        # the contract and reseal". That instruction is only true if resealing
+        # an open task works; refusing it left the prescribed escape hatch
+        # reachable only from BLOCKED.
         self.write_contract(CONTRACT)
         digest = self.summary_digest()
         code, out, _ = self.cli("seal", "TASK-C1", "--digest", digest)
         self.assertEqual(code, 0)
         self.assertIn("SEAL OK", decision_line(out))
-        code, out, _ = self.cli("seal", "TASK-C1", "--digest", digest)
+        code, out, err = self.cli("seal", "TASK-C1", "--digest", digest)
+        self.assertEqual(code, 0, err)
+        self.assertIn("(reseal)", decision_line(out))
+
+    def test_sealing_a_different_task_over_an_open_one_denied(self):
+        self.write_contract(CONTRACT)
+        code, _, err = self.cli("seal", "TASK-C1", "--digest", self.summary_digest())
+        self.assertEqual(code, 0, err)
+        other = copy.deepcopy(CONTRACT)
+        other["task"]["id"] = "TASK-C2"
+        self.write_contract(other)
+        code, out, _ = self.cli("seal", "TASK-C2", "--digest", self.summary_digest())
         self.assertEqual(code, 1)
-        self.assertIn("already active", decision_line(out))
+        self.assertIn("SEAL DENIED", decision_line(out))
+        self.assertIn("TASK-C1", decision_line(out))
 
     def test_status_transitions(self):
         code, out, _ = self.cli("status")

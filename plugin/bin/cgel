@@ -251,19 +251,32 @@ def cmd_seal(args):
         )
 
     current = C.load_state(root)
-    if current["lifecycle"] in C.EDIT_LIFECYCLES:
+    # Resealing THIS task is the amendment path: widen scope after the gate
+    # blocks a path you actually need, or adopt a governance bundle that
+    # changed underneath you. Starting a DIFFERENT task on top of an open one
+    # is still refused.
+    reseal = (
+        current["lifecycle"] in C.TASK_LIFECYCLES
+        and current.get("task_id") == task_id
+    )
+    if current["lifecycle"] in C.TASK_LIFECYCLES and not reseal:
+        blocked = ""
+        if current["lifecycle"] == "BLOCKED":
+            blocked = " (%s)" % current["state"].get("blocked_reason", "?")
         return fail(
-            "SEAL DENIED — task %s is already active" % current["task_id"],
+            "SEAL DENIED — task %s is %s%s"
+            % (current["task_id"], current["lifecycle"], blocked),
             "cgel: close it first (`cgel close --as ...`).",
-        )
-    if current["lifecycle"] == "BLOCKED" and current["task_id"] != task_id:
-        return fail(
-            "SEAL DENIED — task %s is BLOCKED (%s)"
-            % (current["task_id"], current["state"].get("blocked_reason", "?")),
-            "cgel: close or reseal the blocked task before starting another.",
         )
 
     dirty = _dirty_paths_intersecting_scope(root, c["scope"]["allowed"])
+    if reseal:
+        # An amendment happens mid-flight, so the task's own in-scope edits are
+        # necessarily uncommitted — counting them as the user's work would make
+        # --allow-dirty mandatory on the one path the design prescribes. Only
+        # what the previous seal did NOT authorise can still be someone else's.
+        prior_allowed = current["sealed"]["contract"]["scope"]["allowed"]
+        dirty = [p for p in dirty if not C.path_matches(p, prior_allowed)]
     if dirty and not args.allow_dirty:
         for hit in dirty[:20]:
             print("  dirty: %s" % hit, file=sys.stderr)
@@ -277,7 +290,6 @@ def cmd_seal(args):
     bundle = C.governance_bundle(root)
     workspace = C.workspace_snapshot(root)
     semantic = _semantic_requirement(contract, C.load_semantic_rules(root))
-    reseal = current["lifecycle"] == "BLOCKED"
     store = C.repo_state_dir(root)
     task_dir = os.path.join(store, task_id)
     C.atomic_write_json(
@@ -294,15 +306,21 @@ def cmd_seal(args):
             "semantic_verification": semantic,
         },
     )
-    C.atomic_write_json(
-        os.path.join(task_dir, "state.json"),
-        {
-            "task_id": task_id,
-            "lifecycle": "SEALED",
-            "contract_digest": digest,
-            "sealed_at": C.utc_now(),
-        },
-    )
+    state_fields = {
+        "task_id": task_id,
+        "lifecycle": "SEALED",
+        "contract_digest": digest,
+        "sealed_at": C.utc_now(),
+    }
+    if reseal:
+        # Amending a contract must not quietly take back budget the user
+        # granted with `cgel unblock`. Only the user widens a budget, and only
+        # the user should narrow one.
+        for key in ("budget_extra_iterations", "budget_extra_replans"):
+            carried = current["state"].get(key)
+            if carried:
+                state_fields[key] = carried
+    C.atomic_write_json(os.path.join(task_dir, "state.json"), state_fields)
     current_path = os.path.join(store, "CURRENT")
     os.makedirs(store, exist_ok=True)
     with open(current_path, "w", encoding="utf-8") as fh:
@@ -556,6 +574,67 @@ def cmd_audit(_args):
     )
 
 
+def _evidence_state(root, task_id):
+    """Latest evidence per check id, with the two freshness reference points."""
+    tdir = C.task_dir(root, task_id)
+    latest = {}
+    for rec in C.read_jsonl(os.path.join(tdir, C.EVIDENCE_FILE)):
+        if rec.get("type") == "evidence":
+            latest[(rec.get("check") or {}).get("id")] = rec
+    return latest, C.workspace_snapshot(root), C.count_edit_events(tdir)
+
+
+def _evidence_problem(rec, check_id, sealed, bundle, snapshot, edit_seq):
+    """Why this check's latest evidence cannot carry a claim, or None.
+
+    PASS and ADVANCE both rest on this one rule, so the two cannot drift into
+    disagreeing about what "verified" means.
+    """
+    if rec is None:
+        return "no evidence — run `cgel verify %s`" % check_id
+    if (rec.get("result") or {}).get("status") != "pass":
+        return "latest evidence is FAIL"
+    if (
+        rec.get("contract_digest") != sealed["contract_digest"]
+        or rec.get("governance_digest") != bundle["digest"]
+    ):
+        return "evidence bound to a different seal — re-verify"
+    if (rec.get("workspace") or {}).get("diff_digest") != snapshot["diff_digest"]:
+        return "evidence stale — workspace changed after it was recorded; re-verify"
+    if rec.get("edit_seq") != edit_seq:
+        return "evidence stale — edits recorded after it; re-verify"
+    return None
+
+
+def _advance_problems(root, task, pending):
+    """ADVANCE claims the iteration's own checks passed, so it must prove it.
+
+    Ungated, ADVANCE would be a hole in the default-same guard: fail a check,
+    decide ADVANCE instead of the RETRY that would have been refused, and the
+    failure travels on wearing a success-shaped label.
+    """
+    sealed = task["sealed"]
+    bundle = sealed.get("governance_bundle")
+    if not bundle:
+        return ["task sealed before the evidence pipeline — reseal required"]
+    checks = pending.get("expected_checks") or []
+    if not checks:
+        return [
+            "the iteration declared no expected_checks — it claimed nothing, so "
+            "there is nothing to advance on; decide REPLAN, or reopen the "
+            "iteration with --expected-checks"
+        ]
+    latest, snapshot, edit_seq = _evidence_state(root, task["task_id"])
+    problems = []
+    for check_id in checks:
+        problem = _evidence_problem(
+            latest.get(check_id), check_id, sealed, bundle, snapshot, edit_seq
+        )
+        if problem:
+            problems.append("%s: %s" % (check_id, problem))
+    return problems
+
+
 def _pass_problems(root, task):
     """Everything that must hold before a PASS terminal status (§15.3)."""
     if task["lifecycle"] == "BLOCKED":
@@ -581,12 +660,7 @@ def _pass_problems(root, task):
     if problems:
         return problems
 
-    snapshot = C.workspace_snapshot(root)
-    edit_seq = C.count_edit_events(tdir)
-    latest = {}
-    for rec in C.read_jsonl(os.path.join(tdir, C.EVIDENCE_FILE)):
-        if rec.get("type") == "evidence":
-            latest[(rec.get("check") or {}).get("id")] = rec
+    latest, snapshot, edit_seq = _evidence_state(root, task_id)
 
     for criterion in sealed["contract"]["acceptance_criteria"]:
         checks = criterion.get("required_checks") or []
@@ -598,32 +672,11 @@ def _pass_problems(root, task):
             )
             continue
         for check_id in checks:
-            where = "%s/%s" % (criterion["id"], check_id)
-            rec = latest.get(check_id)
-            if rec is None:
-                problems.append(
-                    "%s: no evidence — run `cgel verify %s`" % (where, check_id)
-                )
-            elif (rec.get("result") or {}).get("status") != "pass":
-                problems.append("%s: latest evidence is FAIL" % where)
-            elif rec.get("contract_digest") != sealed["contract_digest"] or rec.get(
-                "governance_digest"
-            ) != bundle["digest"]:
-                problems.append(
-                    "%s: evidence bound to a different seal — re-verify" % where
-                )
-            elif (rec.get("workspace") or {}).get("diff_digest") != snapshot[
-                "diff_digest"
-            ]:
-                problems.append(
-                    "%s: evidence stale — workspace changed after it was "
-                    "recorded; re-verify" % where
-                )
-            elif rec.get("edit_seq") != edit_seq:
-                problems.append(
-                    "%s: evidence stale — edits recorded after it; re-verify"
-                    % where
-                )
+            problem = _evidence_problem(
+                latest.get(check_id), check_id, sealed, bundle, snapshot, edit_seq
+            )
+            if problem:
+                problems.append("%s/%s: %s" % (criterion["id"], check_id, problem))
 
     requirement = sealed.get("semantic_verification") or {}
     if requirement.get("required"):
@@ -1047,6 +1100,18 @@ def cmd_iterate_decide(args):
             "cgel: open one first: `cgel iterate open --intended-change ...`.",
         )
 
+    if args.decision == "ADVANCE":
+        problems = _advance_problems(root, task, pending)
+        if problems:
+            for problem in problems:
+                print("  - %s" % problem, file=sys.stderr)
+            return fail(
+                "DECIDE DENIED — ADVANCE lacks evidence (%d problem(s))"
+                % len(problems),
+                "cgel: ADVANCE records that this iteration's hypothesis held; "
+                "it is not a route past the failure guard. RETRY or REPLAN.",
+            )
+
     signature = C.latest_failure_signature(tdir)
     sig_key = C.signature_key(signature)
     override = None
@@ -1278,7 +1343,7 @@ def main():
     )
     p_decide = iter_sub.add_parser("decide", help="close the open iteration")
     p_decide.add_argument(
-        "decision", choices=["RETRY", "REPLAN", "ROLLBACK_ITERATION"]
+        "decision", choices=["ADVANCE", "RETRY", "REPLAN", "ROLLBACK_ITERATION"]
     )
     p_decide.add_argument("--lesson", default="")
     p_decide.add_argument("--override-reason", dest="override_reason", default="")

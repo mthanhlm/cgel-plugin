@@ -90,14 +90,24 @@ Read this before trusting the gate:
   so a repo can still legitimately commit *about* them (`docs: document
   Claude Code compatibility` is allowed). The broader "don't mention an AI
   tool at all" half of the rule is instruction-only.
+- **The canary catches mistakes, not adversaries, and does not make the
+  registry trustworthy.** `cgel check add` refuses a command that still exits
+  0 in an empty directory, because such a check cannot be measuring your
+  project (D-37). It raises the floor from "any non-empty string" to
+  "something that breaks when the project breaks" — nothing more. A command
+  can be built to fail in an empty directory and still verify nothing, and
+  `--allow-unproven` registers one anyway (marked `unproven: true`). The
+  yardstick is still authored by whoever runs `check add`. Run
+  `cgel check doctor` to re-test registries created before this existed —
+  including any of your own.
 - **The registry is local, never shared.** `cgel init` gitignores `.cgel/`,
   so the verification registry stays out of the project's git history
   (D-35). Two consequences: a fresh clone has no checks, so `cgel verify`
   has nothing to run and PASS is unreachable until someone registers them
   again; and the yardstick is per-machine and unreviewed, so the `echo tests
-  passed` case above is held off by the `cgel check add` permission prompt
-  alone — not by code review. This is a deliberate trade of principle #3
-  ("the evaluated party does not hold the yardstick") for keeping the
+  passed` case is held off by the canary and the `cgel check add` permission
+  prompt alone — not by code review. This is a deliberate trade of principle
+  #3 ("the evaluated party does not hold the yardstick") for keeping the
   plugin out of your history.
 - **The hash chain is recomputable by the same principal.** A determined
   local process could rewrite `evidence.jsonl` and re-chain it. `cgel
@@ -157,7 +167,7 @@ Recommended permission setup (makes the human gates real prompts):
 | Command | What it does |
 |---|---|
 | `cgel init` | activate CGEL for the project (`.cgel/`, `.task/`, registry stub) |
-| `cgel check add/list` | register/list verification checks (between tasks only) |
+| `cgel check add/list/doctor` | register (refused if the command passes with no project present) / list / re-test every check's canary |
 | `cgel validate` | schema-check `.task/contract.json` |
 | `cgel summary` | normalized contract summary + digest (show this to the user) |
 | `cgel seal <id> --digest <d>` | freeze contract + governance bundle; opens the edit gate |

@@ -15,8 +15,10 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "scripts"))
@@ -720,13 +722,98 @@ def _pass_problems(root, task):
 _CHECK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
+def _canary_passes(command, timeout, workdir_hint):
+    """Run a check where the project is not. Success there means it is vacuous.
+
+    A check is the measure, and `cgel verify` trusts it completely — so a
+    command that cannot fail mints valid evidence for nothing. The cheap,
+    general test: a check that depends on the project must break without it.
+    `compileall` on a moved path and a glob that matches nothing both exit 0
+    here, which is exactly how this repo's own two checks rotted.
+
+    Catches mistakes, not adversaries: a command can be built to fail here and
+    still verify nothing, and one using absolute paths is a false positive.
+    Returns (vacuous, detail) — vacuous is None when the canary could not run.
+    """
+    empty = tempfile.mkdtemp(prefix="cgel-canary-")
+    try:
+        proc = subprocess.run(
+            command,
+            shell=True,
+            cwd=empty,
+            capture_output=True,
+            text=True,
+            timeout=max(1, min(timeout, 120)),
+        )
+    except subprocess.TimeoutExpired:
+        # A check that hangs without the project is at least depending on
+        # something; not vacuous, and not worth waiting out.
+        return False, "timed out"
+    except Exception as exc:
+        C._debug("check:canary", exc)
+        return None, "canary could not run"
+    finally:
+        shutil.rmtree(empty, ignore_errors=True)
+    return proc.returncode == 0, "exit %d" % proc.returncode
+
+
 def cmd_check(args):
     if args.check_command == "add":
         return cmd_check_add(args)
     if args.check_command == "list":
         return cmd_check_list(args)
+    if args.check_command == "doctor":
+        return cmd_check_doctor(args)
     print("ERROR usage")
     return 3
+
+
+def cmd_check_doctor(_args):
+    """Re-run every canary. Registration-time review cannot catch rot."""
+    root = require_repo_root()
+    registry, _ = C.load_registry(root)
+    checks = registry.get("checks") or {}
+    if not checks:
+        return fail(
+            "DOCTOR DENIED — no checks registered",
+            "cgel: an empty registry measures nothing; add checks with "
+            "`cgel check add`.",
+        )
+    vacuous, unknown = [], []
+    for check_id in sorted(checks):
+        entry = checks[check_id]
+        if not isinstance(entry, dict) or not entry.get("command"):
+            continue
+        is_vacuous, detail = _canary_passes(
+            entry["command"], entry.get("timeout_seconds", 600), root
+        )
+        if is_vacuous is None:
+            unknown.append(check_id)
+            print("  ? %s — %s" % (check_id, detail), file=sys.stderr)
+        elif is_vacuous:
+            vacuous.append(check_id)
+            print(
+                "  VACUOUS %s — passes with no project present (%s): %s"
+                % (check_id, detail, entry["command"]),
+                file=sys.stderr,
+            )
+        elif entry.get("unproven"):
+            print("  ok %s — registered --allow-unproven, now proven" % check_id,
+                  file=sys.stderr)
+        else:
+            print("  ok %s" % check_id, file=sys.stderr)
+    if vacuous:
+        return fail(
+            "DOCTOR FAIL — %d check(s) verify nothing: %s"
+            % (len(vacuous), ", ".join(vacuous)),
+            "cgel: evidence from these is worthless — they pass whether or not "
+            "the project works. Their target has probably moved. Repair with "
+            "`cgel check add <id> --force --command ...`.",
+        )
+    return ok(
+        "DOCTOR OK — %d check(s) depend on the project%s"
+        % (len(checks), " (%d unknown)" % len(unknown) if unknown else "")
+    )
 
 
 def cmd_check_add(args):
@@ -750,20 +837,44 @@ def cmd_check_add(args):
             "CHECK DENIED — '%s' already exists (use --force to overwrite)"
             % args.check_id
         )
-    entry = {"command": args.check_command_str.strip()}
+    command = args.check_command_str.strip()
+    entry = {"command": command}
     if args.kind.strip():
         entry["kind"] = args.kind.strip()
     if args.timeout > 0:
         entry["timeout_seconds"] = args.timeout
     if args.workdir.strip():
         entry["working_directory"] = args.workdir.strip()
+
+    vacuous, detail = _canary_passes(command, args.timeout or 600, root)
+    if vacuous and not args.allow_unproven:
+        return fail(
+            "CHECK DENIED — '%s' passes with no project present (%s)"
+            % (args.check_id, detail),
+            "cgel: this command succeeds in an empty directory, so it cannot "
+            "be measuring your project — every `cgel verify` would mint valid "
+            "evidence for nothing.",
+            "cgel: point it at something that breaks when the project breaks, "
+            "or register it anyway with --allow-unproven.",
+        )
+    if vacuous:
+        # The admission belongs on the yardstick, not in a terminal nobody
+        # will scroll back to.
+        entry["unproven"] = True
     checks[args.check_id] = entry
     C.atomic_write_json(os.path.join(root, C.REGISTRY_REL_PATH), registry)
-    return ok(
-        "CHECK ADDED — %s: %s" % (args.check_id, entry["command"]),
+    details = [
         "cgel: registered in %s. Run it with `cgel verify %s` once a task "
-        "is sealed." % (C.REGISTRY_REL_PATH, args.check_id),
-    )
+        "is sealed." % (C.REGISTRY_REL_PATH, args.check_id)
+    ]
+    if vacuous:
+        details.append(
+            "cgel: recorded `unproven: true` — this check passes without the "
+            "project, so evidence from it proves nothing."
+        )
+    elif vacuous is None:
+        details.append("cgel: canary could not run (%s) — check unproven." % detail)
+    return ok("CHECK ADDED — %s: %s" % (args.check_id, entry["command"]), *details)
 
 
 def cmd_check_list(_args):
@@ -1372,7 +1483,15 @@ def main():
     p_check_add.add_argument("--timeout", type=int, default=0, help="seconds (default 600)")
     p_check_add.add_argument("--workdir", default="")
     p_check_add.add_argument("--force", action="store_true")
+    p_check_add.add_argument(
+        "--allow-unproven",
+        action="store_true",
+        help="register even though the command passes with no project present",
+    )
     check_sub.add_parser("list", help="list registered checks")
+    check_sub.add_parser(
+        "doctor", help="re-run every check's canary — catches checks that rotted"
+    )
 
     sub.add_parser("rules", help="list semantic rules parsed from docs/standards")
 

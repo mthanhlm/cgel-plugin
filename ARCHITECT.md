@@ -365,6 +365,19 @@ Point 2 is a genuine contradiction with principle #3, not an implementation deta
 
 Also fixed while here: a reseal rewrote `state.json` wholesale and silently dropped `budget_extra_iterations` / `budget_extra_replans`, revoking budget the user had granted with `cgel unblock`. Budgets are the user's to widen (§15.1, principle 6); taking one back without asking is the same violation mirrored.
 
+**D-37 (post-v1.0 amendment — the registry may not accept a check that cannot fail):** `cgel check add` now runs the command in an empty temporary directory before registering it. A check that still exits 0 where the project is absent is not measuring the project, and is refused; `--allow-unproven` overrides and records `unproven: true` on the entry, so the admission travels with the yardstick instead of scrolling out of a terminal. `cgel check doctor` re-runs every canary.
+
+Why this is an addition rather than a correction, stated plainly:
+
+1. **Vacuity at registration already had an answer, and it was §15.7:** the registry is a governance path, team-owned, *reviewed like code*. §15.8 Phase 1's goal ("`echo tests passed` is worthless") rested on a human reading the diff. **D-35 removed the reviewer** — the registry is gitignored, so there is no diff and no reviewer. This half of D-37 compensates for D-35; it is not a gap in the v1.0 design.
+2. **Rot had no answer at all, and that is a real gap.** This repo's `compileall -q scripts bin/cgel` was correct when written and went vacuous months later when the payload moved. Review cannot catch that — it happens after review. §15.4 gives *references* a staleness rule (`review_after`); *checks* had no equivalent. `check doctor` is that equivalent, and it belongs in the release preflight, which is exactly where this repo's own rot would have surfaced.
+
+Honest scope, per principle 1: the canary is **EVIDENCE_GATED** and **catches mistakes, not adversaries** — a command can be built to fail in an empty directory and still verify nothing. It does not make the registry trustworthy; it raises the floor from "any non-empty string" to "something that breaks when the project breaks". The yardstick is still authored by whoever runs `check add`, which is why principle #3 still wants a human near it.
+
+One consequence worth recording: the canary refuses commands that no-op on missing input — `compileall -q src` is denied, `test -d src && compileall -q src` is accepted. That looks strict until you notice the bare form cannot distinguish "src compiles" from "src is gone", which is the whole failure. The refusal teaches the fix.
+
+A note on what D-37 makes unreachable: because rot-prone commands are now refused at registration, the "check registered fine, then rotted" path is largely closed at the source. `check doctor` therefore earns its keep mainly on registries written by earlier versions — every existing one — and on `--allow-unproven` entries.
+
 ## 15.8 MVP implementation plan (walking skeleton)
 
 **Phase 0 — Contract & Scope Gate.** Goal: application code cannot be modified before the seal or outside scope. Components: contract schema + `cgel draft/validate/seal` + normalized summary + digest approval + contract_gate + governance protected paths + dirty-tree detection. Tests: subprocess hook tests (JSON stdin → assert exit code/stderr); e2e: one low-risk auto-seal task + one human-seal task. Risks: the gate is too annoying → a deliberate kill-switch, fail-open for malformed input at the convenience gate, fail-closed at the command guard. Exit: exactly as in v0.4 §F, with the limitation spelled out: Profile A does not yet block Bash-writes.

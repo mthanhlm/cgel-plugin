@@ -28,6 +28,9 @@ import cgel_common as C
 # registry both stay local. The registry being local means each clone starts
 # with no checks and must register its own before any evidence can exist.
 GITIGNORE_ENTRIES = (".cgel/", ".task/")
+# Emptied so the harness never authors an AI-attribution trailer — the half of
+# the no-attribution guarantee the command-string guard structurally cannot see.
+ATTRIBUTION_KEYS = ("commit", "pr", "sessionUrl")
 
 
 def fail(line, *details):
@@ -70,6 +73,59 @@ def load_contract(repo_root):
 
 # ---------------------------------------------------------------- commands
 
+def _merge_attribution_settings(root):
+    """Set attribution.{commit,pr,sessionUrl}="" in .claude/settings.json.
+
+    The command guard only ever sees an inline `git commit -m "..."`; a message
+    from $EDITOR or `--body-file` never reaches the Bash string, so the guard
+    cannot touch it. `attribution.<k>: ""` closes that at the harness itself,
+    for every path. Non-destructive: a value the user already set is left alone,
+    a malformed settings.json is reported and never clobbered, and a run that
+    changes nothing writes nothing (idempotent).
+    """
+    settings_path = os.path.join(root, ".claude", "settings.json")
+    settings = {}
+    if os.path.isfile(settings_path):
+        try:
+            with open(settings_path, encoding="utf-8") as fh:
+                settings = json.load(fh)
+            if not isinstance(settings, dict):
+                raise ValueError("settings.json is not a JSON object")
+        except Exception as exc:
+            C._debug("init:settings", exc)
+            print(
+                "cgel: .claude/settings.json is unreadable (%s) — left untouched. "
+                'Add {"attribution": {"commit": ""}} yourself to stop the harness '
+                "adding an AI trailer to commits/PRs." % exc,
+                file=sys.stderr,
+            )
+            return
+    attribution = settings.get("attribution")
+    if not isinstance(attribution, dict):
+        attribution = {}
+    added = [k for k in ATTRIBUTION_KEYS if k not in attribution]
+    if not added:
+        return
+    for key in added:
+        attribution[key] = ""
+    settings["attribution"] = attribution
+    try:
+        C.atomic_write_json(settings_path, settings)
+    except Exception as exc:
+        C._debug("init:settings-write", exc)
+        print(
+            "cgel: could not write .claude/settings.json (%s) — set "
+            'attribution.commit="" yourself.' % exc,
+            file=sys.stderr,
+        )
+        return
+    print(
+        'cgel: set attribution.%s="" in .claude/settings.json so commits/PRs '
+        "carry no AI trailer." % "/".join(added),
+        file=sys.stderr,
+    )
+
+
 def cmd_init(_args):
     root = os.getcwd()
     cgel_dir = os.path.join(root, ".cgel")
@@ -111,6 +167,7 @@ def cmd_init(_args):
             % " and ".join("'%s'" % entry for entry in GITIGNORE_ENTRIES),
             file=sys.stderr,
         )
+    _merge_attribution_settings(root)
     if already:
         return ok("INIT OK — already initialized (gate on)")
     return ok("INIT OK — .cgel/ and .task/ created and gitignored, gate on")
@@ -757,6 +814,34 @@ def _canary_passes(command, timeout, workdir_hint):
     return proc.returncode == 0, "exit %d" % proc.returncode
 
 
+def _passes_in_tree(command, timeout, workdir, want_exit):
+    """Run a check where the project actually is. False means it cannot pass.
+
+    The canary asks 'does this still pass with no project?'; this asks the dual
+    'does this pass with the project present?'. A check that fails both is
+    neither vacuous nor healthy — its target has moved (deck-compile pointed at
+    a deleted deck/) or the project is genuinely broken. The canary is blind to
+    this by construction, so doctor has to look.
+
+    Returns (passes, detail). passes is None when the run could not happen.
+    """
+    try:
+        proc = subprocess.run(
+            command,
+            shell=True,
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=max(1, timeout),
+        )
+    except subprocess.TimeoutExpired:
+        return False, "timed out in tree"
+    except Exception as exc:
+        C._debug("check:tree", exc)
+        return None, "could not run in tree"
+    return proc.returncode == want_exit, "exit %d" % proc.returncode
+
+
 def cmd_check(args):
     if args.check_command == "add":
         return cmd_check_add(args)
@@ -764,12 +849,21 @@ def cmd_check(args):
         return cmd_check_list(args)
     if args.check_command == "doctor":
         return cmd_check_doctor(args)
+    if args.check_command == "remove":
+        return cmd_check_remove(args)
     print("ERROR usage")
     return 3
 
 
 def cmd_check_doctor(_args):
-    """Re-run every canary. Registration-time review cannot catch rot."""
+    """Re-test every check from both sides. Registration review catches neither.
+
+    The canary catches a check that cannot fail (vacuous). Running the check in
+    the tree catches its dual — a check that cannot pass, because its target was
+    deleted or renamed. A registry can rot either way, and both leave `verify`
+    minting or refusing evidence dishonestly, so a health verdict has to see
+    both. DOCTOR OK is earned only when every check fails empty AND passes here.
+    """
     root = require_repo_root()
     registry, _ = C.load_registry(root)
     checks = registry.get("checks") or {}
@@ -779,22 +873,37 @@ def cmd_check_doctor(_args):
             "cgel: an empty registry measures nothing; add checks with "
             "`cgel check add`.",
         )
-    vacuous, unknown = [], []
+    vacuous, broken, unknown = [], [], []
     for check_id in sorted(checks):
         entry = checks[check_id]
         if not isinstance(entry, dict) or not entry.get("command"):
             continue
-        is_vacuous, detail = _canary_passes(
-            entry["command"], entry.get("timeout_seconds", 600), root
-        )
+        command = entry["command"]
+        timeout = entry.get("timeout_seconds", 600)
+        is_vacuous, canary_detail = _canary_passes(command, timeout, root)
         if is_vacuous is None:
             unknown.append(check_id)
-            print("  ? %s — %s" % (check_id, detail), file=sys.stderr)
-        elif is_vacuous:
+            print("  ? %s — %s" % (check_id, canary_detail), file=sys.stderr)
+            continue
+        if is_vacuous:
             vacuous.append(check_id)
             print(
                 "  VACUOUS %s — passes with no project present (%s): %s"
-                % (check_id, detail, entry["command"]),
+                % (check_id, canary_detail, command),
+                file=sys.stderr,
+            )
+            continue
+        workdir = os.path.join(root, entry.get("working_directory", "."))
+        want_exit = (entry.get("success") or {}).get("exit_code", 0)
+        passes, tree_detail = _passes_in_tree(command, timeout, workdir, want_exit)
+        if passes is None:
+            unknown.append(check_id)
+            print("  ? %s — %s" % (check_id, tree_detail), file=sys.stderr)
+        elif not passes:
+            broken.append(check_id)
+            print(
+                "  CANNOT PASS %s — fails in this project too (%s): %s"
+                % (check_id, tree_detail, command),
                 file=sys.stderr,
             )
         elif entry.get("unproven"):
@@ -802,14 +911,32 @@ def cmd_check_doctor(_args):
                   file=sys.stderr)
         else:
             print("  ok %s" % check_id, file=sys.stderr)
-    if vacuous:
-        return fail(
-            "DOCTOR FAIL — %d check(s) verify nothing: %s"
-            % (len(vacuous), ", ".join(vacuous)),
-            "cgel: evidence from these is worthless — they pass whether or not "
-            "the project works. Their target has probably moved. Repair with "
-            "`cgel check add <id> --force --command ...`.",
-        )
+    if vacuous or broken:
+        parts = []
+        if vacuous:
+            parts.append(
+                "%d check(s) verify nothing: %s" % (len(vacuous), ", ".join(vacuous))
+            )
+        if broken:
+            parts.append(
+                "%d check(s) cannot pass here: %s" % (len(broken), ", ".join(broken))
+            )
+        details = []
+        if vacuous:
+            details.append(
+                "cgel: the vacuous checks pass whether or not the project works — "
+                "their evidence is worthless. Repair with `cgel check add <id> "
+                "--force --command ...`."
+            )
+        if broken:
+            details.append(
+                "cgel: the cannot-pass checks fail here as well as empty. Either "
+                "their target moved (rot) or the project is currently broken — "
+                "doctor cannot tell which. Fix the project, re-point the check "
+                "with `cgel check add <id> --force`, or drop it with `cgel check "
+                "remove <id>`."
+            )
+        return fail("DOCTOR FAIL — %s" % "; ".join(parts), *details)
     return ok(
         "DOCTOR OK — %d check(s) depend on the project%s"
         % (len(checks), " (%d unknown)" % len(unknown) if unknown else "")
@@ -894,6 +1021,32 @@ def cmd_check_list(_args):
             file=sys.stderr,
         )
     return ok("CHECK LIST — %d check(s)" % len(checks))
+
+
+def cmd_check_remove(args):
+    root = require_repo_root()
+    task = C.load_state(root)
+    if task["lifecycle"] != "NO_TASK":
+        return fail(
+            "CHECK DENIED — task %s is %s; the registry is part of the sealed "
+            "governance bundle" % (task["task_id"], task["lifecycle"]),
+            "cgel: close the task first, or run a dedicated "
+            "modify-verification-registry task.",
+        )
+    registry, _ = C.load_registry(root)
+    checks = registry.get("checks") or {}
+    if args.check_id not in checks:
+        known = ", ".join(sorted(checks)) or "none"
+        return fail(
+            "CHECK DENIED — no check '%s' to remove" % args.check_id,
+            "cgel: registered checks: %s" % known,
+        )
+    del checks[args.check_id]
+    C.atomic_write_json(os.path.join(root, C.REGISTRY_REL_PATH), registry)
+    return ok(
+        "CHECK REMOVED — %s" % args.check_id,
+        "cgel: %d check(s) remain." % len(checks),
+    )
 
 
 # ----------------------------------------------------------- semantic layer
@@ -1490,8 +1643,13 @@ def main():
     )
     check_sub.add_parser("list", help="list registered checks")
     check_sub.add_parser(
-        "doctor", help="re-run every check's canary — catches checks that rotted"
+        "doctor",
+        help="re-test every check from both sides — catches checks that rotted",
     )
+    p_check_remove = check_sub.add_parser(
+        "remove", help="remove a check (denied while a task is open)"
+    )
+    p_check_remove.add_argument("check_id")
 
     sub.add_parser("rules", help="list semantic rules parsed from docs/standards")
 

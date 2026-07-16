@@ -179,18 +179,88 @@ class DoctorCatchesRegistriesTheCanaryNeverSaw(CanaryTestCase):
         self.assertIn("byte-compile", decision_line(out))
 
     def test_doctor_passes_when_every_check_depends_on_the_project(self):
+        # Both fail in an empty dir (so they measure something) AND pass in this
+        # fixture's tree (so they can actually be satisfied). DOCTOR OK now
+        # requires both — see DoctorAlsoCatchesChecksThatCannotPass.
         self.write_json(
             ".cgel/registry.json",
             {
                 "checks": {
                     "a": {"command": "test -f src/app.py"},
-                    "b": {"command": "python3 -m unittest discover"},
+                    "b": {"command": "test -d src && python3 -m compileall -q src"},
                 }
             },
         )
         code, out, err = self.cli("check", "doctor")
         self.assertEqual(code, 0, err)
         self.assertIn("DOCTOR OK", decision_line(out))
+
+
+class DoctorAlsoCatchesChecksThatCannotPass(CanaryTestCase):
+    """The dual of vacuity: a check whose target is gone fails the canary (so it
+    looks fine to the old doctor) yet can never pass. deck-compile pointed at a
+    deleted deck/ and this repo's own doctor reported it `ok`. A one-sided
+    canary is structurally blind to it; doctor now runs each check in the tree.
+    """
+
+    # Fails empty (test -d short-circuits) and fails here (no such path) — the
+    # exact shape of the deck-compile/slide-compile regression.
+    ROTTED = "test -d src/gone && python3 -m compileall -q src/gone"
+
+    def test_a_check_that_cannot_pass_here_is_not_reported_ok(self):
+        self.write_json(
+            ".cgel/registry.json", {"checks": {"gone": {"command": self.ROTTED}}}
+        )
+        code, out, err = self.cli("check", "doctor")
+        self.assertEqual(code, 1, "a check that cannot pass was reported ok")
+        self.assertIn("DOCTOR FAIL", decision_line(out))
+        self.assertIn("cannot pass here", decision_line(out))
+        self.assertIn("gone", err)
+
+    def test_failing_empty_is_no_longer_enough_to_be_ok(self):
+        # Both checks fail in an empty dir, so the old canary-only doctor passed
+        # both. Only one passes in the tree. The new doctor separates them.
+        self.write_json(
+            ".cgel/registry.json",
+            {
+                "checks": {
+                    "healthy": {"command": "test -f src/app.py"},
+                    "rotted": {"command": self.ROTTED},
+                }
+            },
+        )
+        code, out, _ = self.cli("check", "doctor")
+        self.assertEqual(code, 1)
+        line = decision_line(out)
+        self.assertIn("rotted", line)
+        self.assertNotIn("healthy", line)
+
+    def test_wording_does_not_assert_rot_over_a_merely_broken_project(self):
+        # Principle 1: doctor cannot tell a moved target from a broken build, so
+        # it must not claim rot. If it did, a red CI would read as a bad check.
+        self.write_json(
+            ".cgel/registry.json", {"checks": {"gone": {"command": self.ROTTED}}}
+        )
+        _, _, err = self.cli("check", "doctor")
+        self.assertIn("cannot tell which", err)
+
+    def test_vacuous_and_cannot_pass_are_named_as_different_faults(self):
+        self.write_json(
+            ".cgel/registry.json",
+            {
+                "checks": {
+                    "empty-pass": {"command": "echo tests passed"},
+                    "gone": {"command": self.ROTTED},
+                }
+            },
+        )
+        code, out, _ = self.cli("check", "doctor")
+        self.assertEqual(code, 1)
+        line = decision_line(out)
+        self.assertIn("verify nothing", line)
+        self.assertIn("cannot pass here", line)
+        self.assertIn("empty-pass", line)
+        self.assertIn("gone", line)
 
     def test_doctor_refuses_an_empty_registry_rather_than_reporting_all_clear(self):
         # "0 checks, all fine" is the most dangerous thing it could say.

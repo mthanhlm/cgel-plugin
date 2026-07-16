@@ -62,7 +62,7 @@ design, debate rounds v0.1→v1.0). All four MVP phases are implemented:
 | Seal binds the exact contract the user saw | digest ceremony: `cgel summary` → user approval → `cgel seal <id> --digest sha256:...` | HUMAN_GATED via the Bash permission prompt |
 | User's uncommitted work is protected | dirty-tree check at seal (`--allow-dirty` only after explicit user confirmation) | EVIDENCE_GATED |
 | No destructive git commands | `PreToolUse` Bash guard (`scripts/command_guard.py`), fail-closed | guardrail on the command string |
-| No AI attribution in commits/PRs | `SessionStart` injects the standing rule (`scripts/session_start.py`); the Bash guard blocks a `git commit` / `gh pr create\|edit` whose text carries a `Co-Authored-By: Claude` trailer or a generated-with footer | guardrail on the command string |
+| No AI attribution in commits/PRs | `cgel init` sets `attribution.commit`/`pr`/`sessionUrl` to `""` in `.claude/settings.json`, so the harness never authors the trailer at all (covers `$EDITOR` and `--body-file`); the Bash guard additionally blocks a `git commit` / `gh pr create\|edit` whose text carries a `Co-Authored-By: Claude` trailer or generated-with footer typed inline; `SessionStart` injects the standing rule as the belt-and-braces third layer | HARD_ENFORCED (settings) + guardrail on the command string |
 
 ## Explicit limitations (Profile A honesty)
 
@@ -81,15 +81,23 @@ Read this before trusting the gate:
   the model to ask first; the CLI cannot verify a human answered.
 - **The command guard is a regex guardrail**, evadable by indirection. It
   catches mistakes, not adversaries.
-- **The attribution block only sees the command string.** A message composed
-  in `$EDITOR` (`git commit` with no `-m`) or passed by file (`gh pr create
-  --body-file`, `git commit -F`) is out of reach — the text never appears in
-  the Bash command. The injected rule is what covers those; the block is the
-  backstop for the common inline case. It is also deliberately **narrow**: it
-  matches the mechanical trailer/footer, not the words "Claude"/"Anthropic",
-  so a repo can still legitimately commit *about* them (`docs: document
-  Claude Code compatibility` is allowed). The broader "don't mention an AI
-  tool at all" half of the rule is instruction-only.
+- **Attribution has three layers, and only the outermost is mechanical for
+  every path.** `cgel init` empties `attribution.commit`/`pr`/`sessionUrl` in
+  `.claude/settings.json`, so the *harness* never appends its own trailer —
+  through any path, including a message composed in `$EDITOR` (`git commit`
+  with no `-m`) or passed by file (`gh pr create --body-file`, `git commit
+  -F`). That closes, for the harness-added trailer, the hole this bullet used
+  to describe. What the setting does **not** cover is a model that deliberately
+  *writes* `Co-Authored-By: Claude` into the message itself: the Bash guard
+  catches that only when it appears inline in the `git commit -m` / `gh pr
+  create|edit` command string, and is deliberately **narrow** — it matches the
+  mechanical trailer/footer, not the words "Claude"/"Anthropic", so a repo can
+  still legitimately commit *about* them (`docs: document Claude Code
+  compatibility` is allowed). A trailer a model hand-writes via `$EDITOR` or
+  `--body-file` is seen by neither the setting nor the guard; the injected rule
+  is what covers that, and it is instruction-only. `.claude/settings.json` is
+  meant to be committed, so the setting is the one attribution layer that
+  survives a fresh clone.
 - **The canary catches mistakes, not adversaries, and does not make the
   registry trustworthy.** `cgel check add` refuses a command that still exits
   0 in an empty directory, because such a check cannot be measuring your
@@ -97,9 +105,16 @@ Read this before trusting the gate:
   "something that breaks when the project breaks" — nothing more. A command
   can be built to fail in an empty directory and still verify nothing, and
   `--allow-unproven` registers one anyway (marked `unproven: true`). The
-  yardstick is still authored by whoever runs `check add`. Run
-  `cgel check doctor` to re-test registries created before this existed —
-  including any of your own.
+  yardstick is still authored by whoever runs `check add`. `cgel check doctor`
+  now tests every registered check from **both** sides — it must fail in an
+  empty directory (not vacuous) *and* pass in your working tree (not rotted) —
+  so a check whose target was deleted or renamed is reported `cannot pass
+  here` instead of the false `ok` the old one-sided canary gave it. Doctor
+  cannot tell a rotted check from a genuinely broken project, so it says so
+  rather than asserting rot; and `cgel check remove <id>` is the sanctioned way
+  to retire one, between tasks only. None of this makes an authored-but-shallow
+  check meaningful — it narrows the gap between doctor's verdict and reality,
+  it does not close it.
 - **The registry is local, never shared.** `cgel init` gitignores `.cgel/`,
   so the verification registry stays out of the project's git history
   (D-35). Two consequences: a fresh clone has no checks, so `cgel verify`
@@ -166,8 +181,8 @@ Recommended permission setup (makes the human gates real prompts):
 
 | Command | What it does |
 |---|---|
-| `cgel init` | activate CGEL for the project (`.cgel/`, `.task/`, registry stub) |
-| `cgel check add/list/doctor` | register (refused if the command passes with no project present) / list / re-test every check's canary |
+| `cgel init` | activate CGEL for the project (`.cgel/`, `.task/`, registry stub; empties `attribution.*` in `.claude/settings.json`) |
+| `cgel check add/list/doctor/remove` | register (refused if the command passes with no project present) / list / re-test every check from both sides — must fail empty *and* pass in-tree / remove a check (between tasks only) |
 | `cgel validate` | schema-check `.task/contract.json` |
 | `cgel summary` | normalized contract summary + digest (show this to the user) |
 | `cgel seal <id> --digest <d>` | freeze contract + governance bundle; opens the edit gate |
@@ -223,7 +238,10 @@ also permits an attributed commit, if the user genuinely wants one.
 The no-AI-attribution rule (injected instruction + commit/PR block) is on by
 default in every CGEL project, task or not. Turn off just that rule with
 `.cgel/config.json` `{"ai_attribution_guard": "off"}`; it leaves the
-destructive-command rules intact.
+destructive-command rules intact. That switch governs only the two runtime
+layers — it does **not** touch the `attribution.*` keys `cgel init` wrote to
+`.claude/settings.json`, which suppress the harness trailer independently;
+restore them by hand if you want the trailer back.
 
 State lives in the **CGEL runtime state store**
 (`$XDG_STATE_HOME/cgel/<repo-id>/` or `%LOCALAPPDATA%\cgel\...`; override

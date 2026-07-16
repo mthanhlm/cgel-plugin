@@ -91,12 +91,33 @@ class SemanticTestCase(unittest.TestCase):
 
     # -------------------------------------------------------------- rules
 
-    def test_rules_parsed(self):
+    BUILTIN_IDS = ["CGEL-COMMENT-1", "CGEL-DEBT-1", "CGEL-IMPACT-1", "CGEL-SECRET-1"]
+
+    def test_rules_parsed_with_builtins(self):
+        code, out, err = self.cli("rules")
+        self.assertEqual(code, 0)
+        self.assertIn("RULES OK — 6 rule(s), 5 blocking", decision_line(out))
+        self.assertIn("SEC-1 [BLOCKING]", err)
+        self.assertIn("STYLE-1", err)
+        self.assertIn("CGEL-IMPACT-1 [BLOCKING]", err)
+        self.assertIn("cgel-builtin", err)
+
+    def test_builtin_rules_config_off(self):
+        self.write(".cgel/config.json", '{"builtin_rules": "off"}')
         code, out, err = self.cli("rules")
         self.assertEqual(code, 0)
         self.assertIn("RULES OK — 2 rule(s), 1 blocking", decision_line(out))
-        self.assertIn("SEC-1 [BLOCKING]", err)
-        self.assertIn("STYLE-1", err)
+        self.assertNotIn("CGEL-IMPACT-1", err)
+
+    def test_project_rule_with_same_id_replaces_builtin(self):
+        self.write(
+            "docs/standards/overrides.md",
+            "## CGEL-DEBT-1 — our own debt policy\nBlocking: no\n",
+        )
+        code, out, err = self.cli("rules")
+        self.assertEqual(code, 0)
+        self.assertIn("RULES OK — 6 rule(s), 4 blocking", decision_line(out))
+        self.assertIn("our own debt policy", err)
 
     # ----------------------------------------------------- frozen trigger
 
@@ -105,13 +126,41 @@ class SemanticTestCase(unittest.TestCase):
         requirement = self.sealed_task()["semantic_verification"]
         self.assertTrue(requirement["required"])
         self.assertIn("risk.level=high", requirement["reasons"])
-        self.assertEqual(requirement["blocking_rule_ids"], ["SEC-1"])
+        self.assertEqual(
+            requirement["blocking_rule_ids"], self.BUILTIN_IDS + ["SEC-1"]
+        )
+
+    def test_medium_risk_requires_semantic_via_builtins(self):
+        contract = json.loads(json.dumps(CONTRACT_HIGH))
+        contract["risk"] = {"level": "medium"}
+        self.seal(contract)
+        requirement = self.sealed_task()["semantic_verification"]
+        self.assertTrue(requirement["required"])
+        self.assertIn("blocking rules present at risk.level=medium",
+                      requirement["reasons"])
 
     def test_low_risk_not_required(self):
         contract = json.loads(json.dumps(CONTRACT_HIGH))
         contract["risk"] = {"level": "low"}
         self.seal(contract)
         self.assertFalse(self.sealed_task()["semantic_verification"]["required"])
+
+    def test_record_accepts_builtin_rule_finding(self):
+        self.seal()
+        self.findings(
+            [
+                {
+                    "rule_id": "CGEL-IMPACT-1",
+                    "status": "fail",
+                    "confidence": 0.9,
+                    "evidence": [{"path": "src/app.py", "line": 1}],
+                    "reason": "old call shape survives in src/app.py",
+                }
+            ]
+        )
+        code, out, _ = self.cli("semantic", "record")
+        self.assertEqual(code, 1)
+        self.assertIn("1 blocking", decision_line(out))
 
     # ----------------------------------------------------------- recording
 
@@ -224,6 +273,23 @@ class SemanticTestCase(unittest.TestCase):
         match = re.search(r"^tools:\s*(.+)$", text, re.M)
         tools = {t.strip() for t in match.group(1).split(",")}
         self.assertEqual(tools, {"Read", "Grep", "Glob"})
+
+    def test_challenger_agent_is_read_only(self):
+        path = os.path.join(PLUGIN_ROOT, "agents", "challenger.md")
+        with open(path) as fh:
+            text = fh.read()
+        match = re.search(r"^tools:\s*(.+)$", text, re.M)
+        self.assertIsNotNone(match, "challenger.md must declare a tools: line")
+        tools = {t.strip() for t in match.group(1).split(",")}
+        self.assertEqual(tools, {"Read", "Grep", "Glob"})
+
+    def test_verifier_carries_builtin_duties(self):
+        path = os.path.join(PLUGIN_ROOT, "agents", "verifier.md")
+        with open(path) as fh:
+            text = fh.read()
+        for rule_id in ("CGEL-IMPACT-1", "CGEL-DEBT-1", "CGEL-COMMENT-1",
+                        "CGEL-SECRET-1"):
+            self.assertIn(rule_id, text)
 
 
 if __name__ == "__main__":

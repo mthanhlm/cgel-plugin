@@ -38,7 +38,7 @@ If there is no `.cgel/` directory and the user explicitly invoked
 `cgel check add` works only while no task is open; once sealed, the
 registry is frozen inside the governance bundle.
 
-## 2. Intake
+## 2. Intake — and challenge the intent
 
 Classify the request: task type (bug-fix, feature, refactor, ...), primary
 domain, risk level, and whether any **protected capability** is involved
@@ -48,6 +48,27 @@ domain, risk level, and whether any **protected capability** is involved
 needed — use the `cgel:explorer` subagent for broad recon instead of
 flooding your own context. If the goal or scope is genuinely ambiguous, ask
 the user now — the contract must not silently reinterpret their intent.
+
+Then judge the intent itself. Your job is the best change, not obedience:
+the user may hand you a design that does not fit this codebase or will not
+survive production, and following it blindly is a failure of the task. For
+design-shaped work or medium/high risk, run the read-only `cgel:challenger`
+subagent with the request, the user's chosen approach, and the repo — it
+returns fit, risks, the true impact surface, and a better alternative when
+one exists.
+
+- If the user's chosen design is worse than an alternative you can defend,
+  say so BEFORE sealing: one AskUserQuestion, both options in plain words,
+  the recommended one first. Never implement a design you believe is wrong
+  without having said so — and never swap in your own design without their
+  answer.
+- Record the outcome in the contract's `intent_review` field (concerns +
+  `alternative_chosen`); `cgel summary` shows it at the seal and warns
+  when it is missing on medium/high risk.
+- Use the challenger's impact surface to draw `scope.allowed` COMPLETE:
+  every caller, config, test, and doc the change touches belongs in scope,
+  or CGEL-IMPACT-1 will block PASS at the end instead of informing the
+  plan at the start.
 
 ## 3. Draft the contract
 
@@ -120,6 +141,12 @@ the store — when they block, the USER decides, not you.
 If a needed check is missing from `.cgel/registry.json`, that is a
 governance change: add it before sealing, or via a dedicated
 `modify-verification-registry` task — never mid-task.
+
+The production bar is always on: the built-in blocking rules
+(`CGEL-IMPACT-1` all impacted code updated, `CGEL-DEBT-1` no new debt,
+`CGEL-COMMENT-1` comment quality, `CGEL-SECRET-1` no hardcoded secrets)
+make semantic verification mandatory at medium+ risk, and the verifier
+will grep, not guess. Write code that survives that review the first time.
 
 ## 7. Two tasks at once
 

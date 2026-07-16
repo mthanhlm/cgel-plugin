@@ -75,6 +75,30 @@ class VacuousPassGuard(unittest.TestCase):
         self.assertGreaterEqual(len(commands), len(HOOK_EVENTS))
 
 
+class ChallengeTheIntentProse(unittest.TestCase):
+    """The user's stated worry: 'help me on the best thing not do anything
+    follow me'. The sentences that carry that duty are pinned here."""
+
+    def test_the_job_is_the_best_change_not_obedience(self):
+        self.assertIn("the best change, not obedience", skill_text("task"))
+
+    def test_a_wrong_design_is_named_before_sealing(self):
+        self.assertIn(
+            "say so BEFORE sealing", skill_text("task")
+        )
+
+    def test_never_silently_follow_or_silently_replace(self):
+        text = skill_text("task")
+        self.assertIn(
+            "Never implement a design you believe is wrong without having said so",
+            text,
+        )
+        self.assertIn("never swap in your own design without their answer", text)
+
+    def test_challenge_outcome_is_recorded_in_the_contract(self):
+        self.assertIn("`intent_review` field", skill_text("task"))
+
+
 class SealCeremonyProse(unittest.TestCase):
     def test_seal_is_one_gate_not_two(self):
         # The permission prompt IS the approval; asking for a chat "approve"

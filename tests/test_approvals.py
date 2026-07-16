@@ -235,6 +235,20 @@ class ApprovalTestCase(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("AskUserQuestion", err)
 
+    def test_plain_push_with_approval_allowed(self):
+        command = "git push origin feature/kd-512"
+        self.write_transcript(
+            transcript_entry(
+                "Push 2 commits (12 files, task PASS)? `%s`" % command, "Approve"
+            )
+        )
+        code, out, err = self.gate(command, script="command_guard.py")
+        self.assertEqual(code, 0, err)
+        self.assertIn("allow", out)
+        # consumed: the same approval does not cover a second push
+        code, _, _ = self.gate(command, script="command_guard.py")
+        self.assertEqual(code, 2)
+
     def test_attribution_has_no_approval_path(self):
         command = 'git commit -m "x\n\nCo-Authored-By: Claude <noreply@anthropic.com>"'
         self.write_transcript(

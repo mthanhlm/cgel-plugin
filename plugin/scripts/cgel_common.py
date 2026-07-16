@@ -322,6 +322,17 @@ def validate_contract(contract):
     elif risk.get("level", "low") not in _RISK_LEVELS:
         err("risk.level: one of %s" % (_RISK_LEVELS,))
 
+    review = contract.get("intent_review")
+    if review is not None:
+        if not isinstance(review, dict):
+            err("intent_review: must be an object")
+        else:
+            concerns = review.get("concerns", [])
+            if not isinstance(concerns, list) or not all(
+                isinstance(x, str) for x in concerns
+            ):
+                err("intent_review.concerns: list of strings")
+
     return errors
 
 
@@ -804,14 +815,66 @@ def signature_key(signature):
 
 # ---------------------------------------------------------- semantic rules
 
-_RULE_HEAD_RE = re.compile(r"^##\s+([A-Z][A-Z0-9]*-\d+)\s*(?:—|–|-)\s*(.+?)\s*$")
+_RULE_HEAD_RE = re.compile(
+    r"^##\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-\d+)\s*(?:—|–|-)\s*(.+?)\s*$"
+)
 _RULE_FIELD_RE = re.compile(r"^([A-Za-z-]+):\s*(.+?)\s*$")
+
+PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BUILTIN_RULES_PATH = os.path.join(PLUGIN_DIR, "rules", "builtin.md")
+
+
+def _parse_rules_file(path, source):
+    rules = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError as exc:
+        _debug("parse_rules:%s" % source, exc)
+        return rules
+    current = None
+    for line in lines:
+        head = _RULE_HEAD_RE.match(line)
+        if head:
+            current = {
+                "id": head.group(1),
+                "title": head.group(2),
+                "blocking": False,
+                "applies_to": [],
+                "owner": None,
+                "source": source,
+            }
+            rules[current["id"]] = current
+            continue
+        if line.startswith("#"):
+            current = None
+            continue
+        if current is None:
+            continue
+        field = _RULE_FIELD_RE.match(line)
+        if not field:
+            continue
+        key, value = field.group(1).lower(), field.group(2)
+        if key == "blocking":
+            current["blocking"] = value.strip().lower() in ("yes", "true")
+        elif key == "applies-to":
+            current["applies_to"] = [s.strip() for s in value.split(",") if s.strip()]
+        elif key == "owner":
+            current["owner"] = value.strip()
+    return rules
 
 
 def load_semantic_rules(repo_root):
-    """Parse docs/standards/*.md rule blocks (## RULE-ID — title). Returns
+    """Project rules from docs/standards/*.md, layered over the plugin's
+    built-in review rules (impact, debt, comments, secrets).
+
+    Built-ins are the production bar every repo gets for free; a project
+    rule with the same id replaces its built-in, and `.cgel/config.json`
+    {"builtin_rules": "off"} removes them entirely. Returns
     {rule_id: {id, title, blocking, applies_to, owner, source}}."""
     rules = {}
+    if read_config(repo_root).get("builtin_rules") != "off":
+        rules.update(_parse_rules_file(BUILTIN_RULES_PATH, "cgel-builtin"))
     base = os.path.join(repo_root, "docs", "standards")
     if not os.path.isdir(base):
         return rules
@@ -823,41 +886,5 @@ def load_semantic_rules(repo_root):
             source = os.path.relpath(os.path.join(dirpath, name), repo_root).replace(
                 os.sep, "/"
             )
-            try:
-                with open(os.path.join(dirpath, name), encoding="utf-8") as fh:
-                    lines = fh.read().splitlines()
-            except OSError as exc:
-                _debug("load_semantic_rules:%s" % source, exc)
-                continue
-            current = None
-            for line in lines:
-                head = _RULE_HEAD_RE.match(line)
-                if head:
-                    current = {
-                        "id": head.group(1),
-                        "title": head.group(2),
-                        "blocking": False,
-                        "applies_to": [],
-                        "owner": None,
-                        "source": source,
-                    }
-                    rules[current["id"]] = current
-                    continue
-                if line.startswith("#"):
-                    current = None
-                    continue
-                if current is None:
-                    continue
-                field = _RULE_FIELD_RE.match(line)
-                if not field:
-                    continue
-                key, value = field.group(1).lower(), field.group(2)
-                if key == "blocking":
-                    current["blocking"] = value.strip().lower() in ("yes", "true")
-                elif key == "applies-to":
-                    current["applies_to"] = [
-                        s.strip() for s in value.split(",") if s.strip()
-                    ]
-                elif key == "owner":
-                    current["owner"] = value.strip()
+            rules.update(_parse_rules_file(os.path.join(dirpath, name), source))
     return rules

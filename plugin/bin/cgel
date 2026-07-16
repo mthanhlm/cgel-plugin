@@ -112,6 +112,14 @@ def _draft_warnings(repo_root, contract):
                     "%s requires unregistered check '%s' (registered: %s)"
                     % (item["id"], check_id, ", ".join(sorted(known)))
                 )
+    if c["risk"]["level"] in ("medium", "high") and not isinstance(
+        contract.get("intent_review"), dict
+    ):
+        warnings.append(
+            "no intent_review — medium/high risk work records the "
+            "design-challenge outcome (concerns, alternative_chosen) before "
+            "sealing; see the cgel:task skill"
+        )
     return warnings
 
 def resolve_task_or_fail(repo_root, task_arg, verb):
@@ -244,6 +252,19 @@ def cmd_validate(args):
     return ok("VALIDATE PASS — %s digest %s" % (task_id, C.contract_digest(contract)))
 
 
+def _intent_review_lines(contract):
+    review = contract.get("intent_review")
+    if not isinstance(review, dict):
+        return []
+    lines = []
+    concerns = review.get("concerns") or []
+    lines.append("Design review: %d concern(s) recorded" % len(concerns))
+    lines += ["  - %s" % concern for concern in concerns]
+    if review.get("alternative_chosen"):
+        lines.append("  chosen: %s" % review["alternative_chosen"])
+    return lines
+
+
 def cmd_summary(args):
     root = require_repo_root()
     contract, path = load_contract(root, args.contract)
@@ -265,8 +286,9 @@ def cmd_summary(args):
         "Task: %s (%s)" % (c["task"]["id"], c["task"]["type"]),
         "Goal: %s" % c["task"]["goal"],
         "Risk: %s" % c["risk"]["level"],
-        "Allowed scope:",
     ]
+    lines += _intent_review_lines(contract)
+    lines.append("Allowed scope:")
     lines += ["  - %s" % p for p in c["scope"]["allowed"]]
     if c["scope"]["forbidden"]:
         lines.append("Forbidden paths:")
@@ -487,6 +509,14 @@ def cmd_seal(args):
             if carried:
                 state_fields[key] = carried
     C.atomic_write_json(os.path.join(task_dir, "state.json"), state_fields)
+    try:
+        # Legacy pointer: installed hooks one release behind read CURRENT to
+        # find the task; without it they see NO_TASK and block every edit
+        # during the upgrade window. New code ignores it; close removes it.
+        with open(os.path.join(store, "CURRENT"), "w", encoding="utf-8") as fh:
+            fh.write(task_id + "\n")
+    except OSError as exc:
+        C._debug("seal:legacy-current", exc)
 
     details = [
         "cgel: edits are now allowed inside scope.allowed. Governance paths "

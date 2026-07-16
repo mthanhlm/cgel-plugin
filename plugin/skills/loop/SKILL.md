@@ -25,11 +25,15 @@ ever decide the task this session owns.
    a second iteration while one is undecided.
 3. **CHANGE** — edit inside `scope.allowed` only. Mechanical bulk edits can
    go to the `cgel:worker` subagent with an exact spec; decisions stay
-   here. Leave code cleaner than you found it: never write a comment that
-   just restates what the code does, and delete any redundant or obsolete
-   comment you pass through in a file you're already editing — even one
-   you did not write. Comments earn their place by explaining *why*, not
-   by narrating *what*.
+   here. Build to the production bar, especially in a messy codebase:
+   reuse existing helpers instead of duplicating them, fix root causes
+   instead of papering over them, update every caller/test/doc the change
+   touches (CGEL-IMPACT-1 and CGEL-DEBT-1 are blocking review rules — the
+   verifier greps). Leave code cleaner than you found it: never write a
+   comment that just restates what the code does, and delete any redundant
+   or obsolete comment you pass through in a file you're already editing —
+   even one you did not write. Comments earn their place by explaining
+   *why*, not by narrating *what*.
 4. **VERIFY + DECIDE** — one call closes the loop honestly:
    `cgel iterate decide ADVANCE --verify --lesson "..."`
    `--verify` freshly runs the iteration's expected checks and records

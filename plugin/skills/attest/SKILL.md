@@ -51,10 +51,20 @@ why. On success it exports a sanitized attestation (ids, statuses, digests
 — no logs) into the runtime state store; `cgel attest` re-exports on
 demand. Attestations are never committed to the repository by default.
 
-Then offer the output a home: one line telling the user the diff is
-uncommitted, or one AskUserQuestion whose Approve option commits it with a
-short plain message — uncommitted task output is what trips the NEXT
-seal's dirty check. Do not commit without their answer.
+Then offer the output a home — one AskUserQuestion covering commit and,
+when the user wants it out, push:
+
+- The commit message meets the repo's own bar: read `git log` for the
+  house style; imperative subject ≤72 chars; a body only when it explains
+  *why*. No debug leftovers in the diff — the verifier's CGEL-COMMENT-1
+  already blocked them, keep it that way. Do not commit without their
+  answer; uncommitted task output is what trips the NEXT seal's dirty
+  check.
+- Pushing is its own approval: the question quotes the exact
+  `git push ...` command and says plainly what goes out — commits ahead,
+  diffstat, and the task's terminal status. The push gate refuses the
+  command without that recorded answer. Never push work whose task did
+  not close PASS without saying so in the question.
 
 If PASS is impossible (a criterion has no registered check, a blocking
 finding stands, budgets ran out), the honest closes are

@@ -34,9 +34,35 @@ class GuardTestCase(unittest.TestCase):
         code, _, _ = self.bash("git push -f origin main")
         self.assertEqual(code, 2)
 
-    def test_force_with_lease_allowed(self):
+    def test_force_with_lease_needs_push_approval(self):
+        # not destructive, but still a push — the push gate wants a
+        # recorded user answer before anything reaches a remote
         code, _, err = self.bash("git push --force-with-lease origin main")
+        self.assertEqual(code, 2)
+        self.assertIn("push", err)
+
+    def test_plain_push_needs_approval(self):
+        code, _, err = self.bash("git push origin main")
+        self.assertEqual(code, 2)
+        self.assertIn("CGEL guard [push]", err)
+        self.assertIn("AskUserQuestion", err)
+
+    def test_push_gate_config_off(self):
+        with open(
+            os.path.join(self.repo, ".cgel", "config.json"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write('{"push_gate": "off"}')
+        code, _, err = self.bash("git push origin main")
         self.assertEqual(code, 0, err)
+
+    def test_push_user_prefix_allows(self):
+        code, _, err = self.bash("CGEL_GIT=allow git push origin main")
+        self.assertEqual(code, 0, err)
+
+    def test_fetch_and_pull_unaffected_by_push_gate(self):
+        for command in ("git fetch origin", "git pull --rebase"):
+            code, _, err = self.bash(command)
+            self.assertEqual(code, 0, "%s: %s" % (command, err))
 
     def test_reset_hard_blocked(self):
         code, _, err = self.bash("git reset --hard HEAD~1")

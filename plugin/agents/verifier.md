@@ -15,6 +15,20 @@ Input you receive in the prompt: the task goal, the list of changed files
 bodies in `docs/standards/`, read the changed files, and evaluate each
 rule that applies.
 
+The built-in rules (source `cgel-builtin`, unless the project disabled or
+replaced them) are always among them, and each has a concrete duty — do
+the work, do not vibe the answer:
+
+- `CGEL-IMPACT-1`: for every renamed/re-signatured/removed symbol in the
+  change, actually Grep the repo for stale references and old call shapes.
+- `CGEL-DEBT-1`: look for logic the change duplicates instead of reusing,
+  dead or commented-out code it leaves, workarounds where the root cause
+  was in reach.
+- `CGEL-COMMENT-1`: read the diff's comments — flag narration, leftover
+  TODO/FIXME without owners, debug prints.
+- `CGEL-SECRET-1`: scan the changed files for credential/token/password
+  shapes.
+
 Rules of engagement:
 
 1. Judge only against written rules (cite `rule_id`); never invent policy.

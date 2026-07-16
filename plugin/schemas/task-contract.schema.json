@@ -84,6 +84,15 @@
         "affected_components": {"type": "array", "items": {"type": "string"}},
         "behavior_invariants": {"type": "array", "items": {"type": "string"}}
       }
+    },
+    "intent_review": {
+      "type": "object",
+      "description": "Outcome of the pre-seal design challenge: what was questioned about the user's requested approach, and what was chosen. Expected (warned when absent) for medium/high risk.",
+      "properties": {
+        "assessed": {"type": "boolean"},
+        "concerns": {"type": "array", "items": {"type": "string"}},
+        "alternative_chosen": {"type": "string"}
+      }
     }
   }
 }

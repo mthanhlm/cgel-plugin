@@ -67,8 +67,9 @@ design, debate rounds v0.1→v1.0). All four MVP phases are implemented:
 ## Approval by question
 
 Privileged commands — `cgel seal`, `cgel unblock`, failure overrides,
-`check add --force/--allow-unproven`, `check remove`, `--allow-dirty`, and
-the destructive git commands the guard blocks — run only when the session
+`check add --force/--allow-unproven`, `check remove`, `--allow-dirty`,
+**every `git push`** (config `{"push_gate": "off"}` opts out), and the
+destructive git commands the guard blocks — run only when the session
 transcript carries the user's recorded **AskUserQuestion** answer:
 
 - the model asks one short plain-language question (goal, files, checks,
@@ -114,6 +115,40 @@ question or starts new work in the same repo:
 - `cgel close` frees the matching draft, and a fresh seal of a previously
   closed task id archives the old run instead of inheriting its spent
   budgets.
+
+## The production bar (built-in review rules)
+
+Four blocking rules ship with the plugin and merge into every project's
+rule set (`cgel rules` lists them as `cgel-builtin`):
+
+| Rule | What the verifier must actually do |
+|---|---|
+| `CGEL-IMPACT-1` — all impacted code updated | grep for stale references and old call shapes of every changed symbol |
+| `CGEL-DEBT-1` — no new technical debt | find duplicated logic, dead code, workarounds where the root cause was in reach |
+| `CGEL-COMMENT-1` — comments earn their place | flag narration, ownerless TODOs, commented-out code, debug prints |
+| `CGEL-SECRET-1` — no hardcoded secrets | scan changed files for credential/token/password shapes |
+
+Because blocking rules now always exist, **semantic verification is
+mandatory at medium+ risk in every CGEL repo**: the opus verifier runs,
+its findings are recorded and chained, and a blocking finding stops PASS.
+Honesty: these are EVIDENCE_GATED model judgments — recorded, escalated to
+the human on disagreement, not deterministic proofs. A project rule with
+the same id replaces its built-in; `.cgel/config.json`
+`{"builtin_rules": "off"}` removes them.
+
+## Challenge the intent (before the seal)
+
+The task skill's intake step now judges the request itself — "the best
+change, not obedience". For design-shaped or medium/high-risk work, a
+read-only opus **challenger** agent reviews the user's chosen approach
+against the actual codebase: fit, production soundness, the true impact
+surface (feeding a complete `scope.allowed`), and a better alternative
+when one exists. If the user's design loses to an alternative the model
+can defend, the user hears it in one question BEFORE sealing — and their
+decision is recorded in the contract's `intent_review` field, which
+`cgel summary` displays and warns about when missing at medium/high risk.
+GUIDANCE + recorded artifact: the plugin cannot force good judgment, it
+forces the judgment to happen and to leave a trace.
 
 ## Watch globs (path-scoped staleness)
 

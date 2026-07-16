@@ -262,6 +262,51 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("CHECK DENIED", decision_line(out))
         self.assertIn("governance bundle", decision_line(out))
 
+    def test_seal_writes_legacy_current_and_close_removes_it(self):
+        # transition compat: installed hooks one release behind still find
+        # the task through CURRENT; new code never reads it
+        self.write_contract(CONTRACT)
+        self.cli("seal", "TASK-C1", "--digest", self.summary_digest())
+        repos = os.listdir(self.state)
+        current = os.path.join(self.state, repos[0], "CURRENT")
+        with open(current, encoding="utf-8") as fh:
+            self.assertEqual(fh.read().strip(), "TASK-C1")
+        self.cli("close", "--as", "ABORT")
+        self.assertFalse(os.path.exists(current))
+
+    def test_summary_warns_without_intent_review_on_medium_risk(self):
+        contract = json.loads(json.dumps(CONTRACT))
+        contract["risk"] = {"level": "medium", "reasons": ["api change"]}
+        self.write_contract(contract)
+        code, _, err = self.cli("summary")
+        self.assertEqual(code, 0)
+        self.assertIn("no intent_review", err)
+        contract["intent_review"] = {
+            "assessed": True,
+            "concerns": ["user's schema-per-tenant idea scales badly"],
+            "alternative_chosen": "single schema + tenant_id column",
+        }
+        self.write_contract(contract)
+        code, _, err = self.cli("summary")
+        self.assertEqual(code, 0)
+        self.assertNotIn("no intent_review", err)
+        self.assertIn("Design review: 1 concern(s)", err)
+        self.assertIn("tenant_id column", err)
+
+    def test_low_risk_needs_no_intent_review(self):
+        self.write_contract(CONTRACT)  # default risk: low
+        code, _, err = self.cli("summary")
+        self.assertEqual(code, 0)
+        self.assertNotIn("intent_review", err)
+
+    def test_malformed_intent_review_rejected(self):
+        contract = json.loads(json.dumps(CONTRACT))
+        contract["intent_review"] = {"concerns": "not-a-list"}
+        self.write_contract(contract)
+        code, out, err = self.cli("validate")
+        self.assertEqual(code, 1)
+        self.assertIn("intent_review.concerns", err)
+
     def test_init_creates_structure(self):
         fresh = tempfile.mkdtemp(prefix="cgel-fresh-")
         try:

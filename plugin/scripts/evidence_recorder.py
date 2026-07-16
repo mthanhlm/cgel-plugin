@@ -14,12 +14,14 @@ Claude Code versions are isolated in the adapter below (backlog V-4).
 
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cgel_common as C
 
 EDIT_TOOLS = ("Edit", "Write", "NotebookEdit")
+CGEL_WORD = re.compile(r"\bcgel\b")
 
 
 def _exit_code_of(payload):
@@ -48,8 +50,8 @@ def main():
     repo_root = C.find_repo_root(cwd)
     if not repo_root:
         return 0
-    task = C.load_state(repo_root)
-    if task["lifecycle"] not in C.TASK_LIFECYCLES:
+    tasks = C.open_tasks(repo_root)
+    if not tasks:
         return 0
 
     tool_input = payload.get("tool_input") or {}
@@ -71,7 +73,7 @@ def main():
     elif tool == "Bash":
         command = tool_input.get("command") or ""
         audit_all = C.read_config(repo_root).get("audit_bash") == "all"
-        if "cgel" not in command and not audit_all:
+        if not CGEL_WORD.search(command) and not audit_all:
             return 0
         record = {
             "type": "bash",
@@ -84,12 +86,16 @@ def main():
 
     if record is None:
         return 0
-    task_dir = C.task_dir(repo_root, task["task_id"])
-    C.chain_append(
-        os.path.join(task_dir, C.EVENTS_FILE),
-        record,
-        C.chain_seed(task["task_id"]),
-    )
+    # Every open task gets the event: the workspace is shared, so an edit
+    # anywhere is a freshness fact for all of them (watch globs decide
+    # per-check whether it matters).
+    for task in tasks:
+        task_dir = C.task_dir(repo_root, task["task_id"])
+        C.chain_append(
+            os.path.join(task_dir, C.EVENTS_FILE),
+            dict(record),
+            C.chain_seed(task["task_id"]),
+        )
     return 0
 
 

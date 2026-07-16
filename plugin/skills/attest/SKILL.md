@@ -6,12 +6,14 @@ user-invocable: false
 
 # CGEL attest & close
 
+With several tasks open, every command here takes `--task <id>`.
+
 ## 1. Check what the seal demands
 
 `cgel status` and the sealed contract tell you if semantic verification is
 required (frozen at seal: high risk, AI-enabled, `semantic_review: true`,
 or blocking rules at medium risk). `cgel rules` lists the semantic rules
-in force.
+in force. If it is not required, skip to step 3.
 
 ## 2. Run the verifier (if required)
 
@@ -34,24 +36,31 @@ afterwards makes it stale — re-run the verifier after fixes.
   evidence and re-run the verifier. Still disagreeing? `cgel close --as
   ESCALATE`. Never bury a blocking finding.
 
-## 3. Fresh evidence for every criterion
-
-Re-run `cgel verify <check-id>` for every required check AFTER the last
-edit (evidence staleness is enforced; a single edit invalidates all of
-it). `cgel audit` should say `chain=intact bundle=unchanged`.
-
-## 4. Close
+## 3. Fresh evidence, then close — two calls
 
 ```
-cgel close --as PASS
+cgel verify --required
+cgel iterate decide ADVANCE --lesson "..." && cgel close --as PASS
 ```
 
-The validator rejects anything missing/stale/failed and lists why. On
-success it exports a sanitized attestation (ids, statuses, digests — no
-logs) into the runtime state store; `cgel attest` re-exports on demand.
-Attestations are never committed to the repository by default.
+`verify --required` re-runs every check the criteria name, in one
+roundtrip, AFTER the last edit (staleness is enforced; checks with `watch`
+globs survive unrelated edits, everything else does not). The validator
+behind `close --as PASS` rejects anything missing/stale/failed and lists
+why. On success it exports a sanitized attestation (ids, statuses, digests
+— no logs) into the runtime state store; `cgel attest` re-exports on
+demand. Attestations are never committed to the repository by default.
+
+Then offer the output a home: one line telling the user the diff is
+uncommitted, or one AskUserQuestion whose Approve option commits it with a
+short plain message — uncommitted task output is what trips the NEXT
+seal's dirty check. Do not commit without their answer.
 
 If PASS is impossible (a criterion has no registered check, a blocking
 finding stands, budgets ran out), the honest closes are
 `ESCALATE --reason "..."`, `ROLLED_BACK`, or `ABORT`. A denied PASS is
 information, not an obstacle to route around.
+
+If the user aborted the task, close now (`ROLLED_BACK`/`ABORT`) — no
+farewell verify runs, no attestation theater. `close` deletes the matching
+draft from `.task/` so the next task starts clean.

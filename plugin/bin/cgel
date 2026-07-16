@@ -60,8 +60,13 @@ def require_repo_root():
     return root
 
 
-def load_contract(repo_root):
-    path = os.path.join(repo_root, C.CONTRACT_REL_PATH)
+def load_contract(repo_root, override=None):
+    """Default draft is .task/contract.json; --contract names another file
+    (still under .task/, the always-writable area) so two DRAFTS can exist
+    at once — the second parallel task drafts at .task/<id>.contract.json."""
+    path = os.path.join(repo_root, override) if override else os.path.join(
+        repo_root, C.CONTRACT_REL_PATH
+    )
     try:
         return C.load_json(path), path
     except FileNotFoundError:
@@ -69,6 +74,53 @@ def load_contract(repo_root):
     except Exception as exc:
         print("cgel: %s is not valid JSON: %s" % (path, exc), file=sys.stderr)
         return None, path
+
+
+def _draft_paths(repo_root):
+    """Contract drafts on disk: .task/contract.json and .task/*.contract.json."""
+    base = os.path.join(repo_root, ".task")
+    paths = []
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return paths
+    for name in names:
+        if name == "contract.json" or name.endswith(".contract.json"):
+            paths.append(os.path.join(base, name))
+    return paths
+
+
+def _draft_warnings(repo_root, contract):
+    """Say at draft time what would otherwise surface at close time —
+    an AC without checks structurally cannot PASS, and in real use that
+    turned 8 of 12 closes into ESCALATE."""
+    c = C.normalize_contract(contract)
+    registry, _ = C.load_registry(repo_root)
+    known = set((registry.get("checks") or {}).keys())
+    warnings = []
+    for item in c["acceptance_criteria"]:
+        checks = item.get("required_checks") or []
+        if not checks:
+            warnings.append(
+                "%s has no required_checks — PASS will be impossible; name a "
+                "check (register one with `cgel check add` before sealing) "
+                "or plan to close as ESCALATE" % item["id"]
+            )
+        for check_id in checks:
+            if known and check_id not in known:
+                warnings.append(
+                    "%s requires unregistered check '%s' (registered: %s)"
+                    % (item["id"], check_id, ", ".join(sorted(known)))
+                )
+    return warnings
+
+def resolve_task_or_fail(repo_root, task_arg, verb):
+    """Shared --task resolution; prints the denial and returns None on miss."""
+    task, error = C.resolve_task(repo_root, task_arg or None)
+    if task is None:
+        print("%s DENIED — %s" % (verb, error))
+        return None
+    return task
 
 
 # ---------------------------------------------------------------- commands
@@ -173,9 +225,9 @@ def cmd_init(_args):
     return ok("INIT OK — .cgel/ and .task/ created and gitignored, gate on")
 
 
-def cmd_validate(_args):
+def cmd_validate(args):
     root = require_repo_root()
-    contract, path = load_contract(root)
+    contract, path = load_contract(root, args.contract)
     if contract is None:
         return fail(
             "VALIDATE FAIL — no readable contract",
@@ -186,13 +238,15 @@ def cmd_validate(_args):
         for error in errors:
             print("  - %s" % error, file=sys.stderr)
         return fail("VALIDATE FAIL — %d error(s)" % len(errors))
+    for warning in _draft_warnings(root, contract):
+        print("  warn: %s" % warning, file=sys.stderr)
     task_id = contract["task"]["id"]
     return ok("VALIDATE PASS — %s digest %s" % (task_id, C.contract_digest(contract)))
 
 
-def cmd_summary(_args):
+def cmd_summary(args):
     root = require_repo_root()
-    contract, path = load_contract(root)
+    contract, path = load_contract(root, args.contract)
     if contract is None:
         return fail("SUMMARY FAIL — no readable contract", "cgel: expected %s" % path)
     errors = C.validate_contract(contract)
@@ -200,6 +254,8 @@ def cmd_summary(_args):
         for error in errors:
             print("  - %s" % error, file=sys.stderr)
         return fail("SUMMARY FAIL — contract invalid (%d error(s))" % len(errors))
+    for warning in _draft_warnings(root, contract):
+        print("  warn: %s" % warning, file=sys.stderr)
 
     c = C.normalize_contract(contract)
     digest = C.contract_digest(contract)
@@ -281,9 +337,39 @@ def _dirty_paths_intersecting_scope(repo_root, allowed_patterns):
     return hits
 
 
+def _rotate_closed_task_dir(task_dir, task_id):
+    """A fresh seal of a previously closed id must not inherit that run's
+    spent budgets or chains — archive the old directory instead."""
+    state_path = os.path.join(task_dir, "state.json")
+    if not os.path.isfile(state_path):
+        return
+    try:
+        state = C.load_json(state_path)
+    except Exception as exc:
+        C._debug("seal:rotate", exc)
+        return
+    if state.get("lifecycle") in C.TASK_LIFECYCLES:
+        return  # still open — the reseal path owns this case
+    stamp = re.sub(r"[^0-9TZ]", "", state.get("closed_at") or C.utc_now())[:15]
+    target = "%s-closed-%s" % (task_dir, stamp)
+    suffix = 0
+    while os.path.exists(target):
+        suffix += 1
+        target = "%s-closed-%s-%d" % (task_dir, stamp, suffix)
+    try:
+        os.rename(task_dir, target)
+        print(
+            "cgel: previous closed run of %s archived as %s."
+            % (task_id, os.path.basename(target)),
+            file=sys.stderr,
+        )
+    except OSError as exc:
+        C._debug("seal:rotate-rename", exc)
+
+
 def cmd_seal(args):
     root = require_repo_root()
-    contract, path = load_contract(root)
+    contract, path = load_contract(root, args.contract)
     if contract is None:
         return fail("SEAL DENIED — no readable contract", "cgel: expected %s" % path)
     errors = C.validate_contract(contract)
@@ -309,24 +395,18 @@ def cmd_seal(args):
             "cgel: re-run `cgel summary`, show it to the user, and seal the new digest.",
         )
 
-    current = C.load_state(root)
-    # Resealing THIS task is the amendment path: widen scope after the gate
-    # blocks a path you actually need, or adopt a governance bundle that
-    # changed underneath you. Starting a DIFFERENT task on top of an open one
-    # is still refused.
-    reseal = (
-        current["lifecycle"] in C.TASK_LIFECYCLES
-        and current.get("task_id") == task_id
-    )
-    if current["lifecycle"] in C.TASK_LIFECYCLES and not reseal:
-        blocked = ""
-        if current["lifecycle"] == "BLOCKED":
-            blocked = " (%s)" % current["state"].get("blocked_reason", "?")
-        return fail(
-            "SEAL DENIED — task %s is %s%s"
-            % (current["task_id"], current["lifecycle"], blocked),
-            "cgel: close it first (`cgel close --as ...`).",
-        )
+    # Several tasks may be open at once (D-39). Resealing THIS task stays the
+    # amendment path; sealing a DIFFERENT task no longer waits for the first
+    # to close — it only warns when the scopes overlap.
+    opens = C.open_tasks(root)
+    mine = next((t for t in opens if t["task_id"] == task_id), None)
+    others = [t for t in opens if t["task_id"] != task_id]
+    reseal = mine is not None
+
+    store = C.repo_state_dir(root)
+    task_dir = os.path.join(store, task_id)
+    if not reseal:
+        _rotate_closed_task_dir(task_dir, task_id)
 
     dirty = _dirty_paths_intersecting_scope(root, c["scope"]["allowed"])
     if reseal:
@@ -334,8 +414,21 @@ def cmd_seal(args):
         # necessarily uncommitted — counting them as the user's work would make
         # --allow-dirty mandatory on the one path the design prescribes. Only
         # what the previous seal did NOT authorise can still be someone else's.
-        prior_allowed = current["sealed"]["contract"]["scope"]["allowed"]
+        prior_allowed = mine["sealed"]["contract"]["scope"]["allowed"]
         dirty = [p for p in dirty if not C.path_matches(p, prior_allowed)]
+    claimed = []
+    for other in others:
+        other_allowed = other["sealed"]["contract"]["scope"]["allowed"]
+        hits = [p for p in dirty if C.path_matches(p, other_allowed)]
+        if hits:
+            claimed.extend(hits)
+            dirty = [p for p in dirty if p not in hits]
+    if claimed:
+        print(
+            "cgel: %d uncommitted file(s) belong to other open task(s) and "
+            "stay their work." % len(claimed),
+            file=sys.stderr,
+        )
     if dirty and not args.allow_dirty:
         for hit in dirty[:20]:
             print("  dirty: %s" % hit, file=sys.stderr)
@@ -345,12 +438,26 @@ def cmd_seal(args):
             "explicit confirmation reseal with --allow-dirty.",
         )
 
+    overlapping = [
+        other["task_id"]
+        for other in others
+        if C.scopes_overlap(
+            c["scope"]["allowed"],
+            other["sealed"]["contract"]["scope"]["allowed"],
+        )
+    ]
+    if overlapping:
+        print(
+            "cgel: WARNING — scope.allowed overlaps open task(s) %s. Shared "
+            "paths mean shared evidence staleness; keep parallel scopes "
+            "disjoint when you can." % ", ".join(overlapping),
+            file=sys.stderr,
+        )
+
     seal_mode = "human" if c["protected_capabilities"] else "auto"
     bundle = C.governance_bundle(root)
     workspace = C.workspace_snapshot(root)
     semantic = _semantic_requirement(contract, C.load_semantic_rules(root))
-    store = C.repo_state_dir(root)
-    task_dir = os.path.join(store, task_id)
     C.atomic_write_json(
         os.path.join(task_dir, "sealed_task.json"),
         {
@@ -376,15 +483,22 @@ def cmd_seal(args):
         # granted with `cgel unblock`. Only the user widens a budget, and only
         # the user should narrow one.
         for key in ("budget_extra_iterations", "budget_extra_replans"):
-            carried = current["state"].get(key)
+            carried = mine["state"].get(key)
             if carried:
                 state_fields[key] = carried
     C.atomic_write_json(os.path.join(task_dir, "state.json"), state_fields)
-    current_path = os.path.join(store, "CURRENT")
-    os.makedirs(store, exist_ok=True)
-    with open(current_path, "w", encoding="utf-8") as fh:
-        fh.write(task_id + "\n")
 
+    details = [
+        "cgel: edits are now allowed inside scope.allowed. Governance paths "
+        "stay read-only unless a protected capability grants them.",
+        "cgel: governance bundle sealed (%d files). Changing any of them "
+        "mid-task moves the task to BLOCKED." % len(bundle["members"]),
+    ]
+    if others:
+        details.append(
+            "cgel: %d other task(s) open (%s) — pass --task on every verb."
+            % (len(others), ", ".join(o["task_id"] for o in others))
+        )
     return ok(
         "SEAL OK — %s digest=%s mode=%s governance=%s%s"
         % (
@@ -394,10 +508,7 @@ def cmd_seal(args):
             bundle["digest"],
             " (reseal)" if reseal else "",
         ),
-        "cgel: edits are now allowed inside scope.allowed. Governance paths "
-        "stay read-only unless a protected capability grants them.",
-        "cgel: governance bundle sealed (%d files). Changing any of them "
-        "mid-task moves the task to BLOCKED." % len(bundle["members"]),
+        *details
     )
 
 
@@ -458,44 +569,40 @@ def _summarize(output, head=400, tail=900):
     )
 
 
-def cmd_verify(args):
-    root = require_repo_root()
-    task = C.load_state(root)
-    if task["lifecycle"] == "NO_TASK":
-        return fail("VERIFY DENIED — no sealed task")
+def _verify_preflight(root, task, verb="VERIFY"):
+    """Shared refusals before any check may run. Returns an exit code or None."""
     if task["lifecycle"] == "BLOCKED":
         return fail(
-            "VERIFY DENIED — task %s is BLOCKED (%s)"
-            % (task["task_id"], task["state"].get("blocked_reason", "?")),
+            "%s DENIED — task %s is BLOCKED (%s)"
+            % (verb, task["task_id"], task["state"].get("blocked_reason", "?")),
             "cgel: resolve the block first (reseal or user action).",
         )
-    sealed = task["sealed"]
-    if not sealed.get("governance_bundle"):
+    if not task["sealed"].get("governance_bundle"):
         return fail(
-            "VERIFY DENIED — task sealed before the evidence pipeline",
+            "%s DENIED — task sealed before the evidence pipeline" % verb,
             "cgel: close and reseal to bind a governance bundle.",
         )
     if _bundle_changed(root, task):
         return fail(
-            "VERIFY BLOCKED — sealed-guidebook-bundle-changed",
+            "%s BLOCKED — sealed-guidebook-bundle-changed" % verb,
             "cgel: registry/rules/hooks/guidebook changed after seal; the "
             "sealed measure is void and the task is BLOCKED.",
             "cgel: reseal to adopt the new measure (`cgel summary` then "
-            "`cgel seal %s --digest <new>`), or close honestly." % task["task_id"],
+            "`cgel seal %s --digest <same or new>`) — the same digest needs "
+            "no new approval — or close honestly." % task["task_id"],
         )
+    return None
 
-    registry, registry_digest = C.load_registry(root)
-    check = (registry.get("checks") or {}).get(args.check_id)
+
+def _run_check(root, task, check_id, registry, registry_digest):
+    """Run one registered check and chain its evidence.
+
+    Returns (status, exit_code, chain_hash, tail_lines); status is 'unknown'
+    when the check is not registered (nothing recorded)."""
+    check = (registry.get("checks") or {}).get(check_id)
     if not isinstance(check, dict) or not check.get("command"):
-        known = ", ".join(sorted((registry.get("checks") or {}).keys())) or "none"
-        return fail(
-            "VERIFY DENIED — unknown check '%s'" % args.check_id,
-            "cgel: registered checks: %s" % known,
-            "cgel: adding a check edits %s — a governance path; do it before "
-            "seal or via a modify-verification-registry task."
-            % C.REGISTRY_REL_PATH,
-        )
-
+        return "unknown", None, None, []
+    sealed = task["sealed"]
     command = check["command"]
     timeout = check.get("timeout_seconds", 600)
     workdir = os.path.join(root, check.get("working_directory", "."))
@@ -532,7 +639,7 @@ def cmd_verify(args):
     tdir = C.task_dir(root, task["task_id"])
     record = {
         "type": "evidence",
-        "check": {"id": args.check_id, "registry_digest": registry_digest},
+        "check": {"id": check_id, "registry_digest": registry_digest},
         "contract_digest": sealed["contract_digest"],
         "governance_digest": sealed["governance_bundle"]["digest"],
         "workspace": C.workspace_snapshot(root),
@@ -555,23 +662,100 @@ def cmd_verify(args):
     rec = C.chain_append(
         os.path.join(tdir, C.EVIDENCE_FILE), record, C.chain_seed(task["task_id"])
     )
-    line = "VERIFY %s check=%s exit=%s evidence=%s" % (
-        status.upper(),
-        args.check_id,
-        exit_code,
-        rec["chain"]["hash"][:19],
-    )
-    if status == "pass":
-        return ok(line)
-    tail_lines = output.splitlines()[-15:]
-    return fail(line, *tail_lines)
+    return status, exit_code, rec["chain"]["hash"][:19], output.splitlines()[-15:]
 
 
-def cmd_audit(_args):
+def _required_check_ids(task):
+    """Every required check of every criterion, first mention first."""
+    ordered = []
+    for criterion in task["sealed"]["contract"]["acceptance_criteria"]:
+        for check_id in criterion.get("required_checks") or []:
+            if check_id not in ordered:
+                ordered.append(check_id)
+    return ordered
+
+
+def cmd_verify(args):
     root = require_repo_root()
-    task = C.load_state(root)
-    if task["lifecycle"] == "NO_TASK":
-        return fail("AUDIT DENIED — no current task")
+    task = resolve_task_or_fail(root, args.task, "VERIFY")
+    if task is None:
+        return 1
+    refused = _verify_preflight(root, task)
+    if refused is not None:
+        return refused
+
+    registry, registry_digest = C.load_registry(root)
+    check_ids = list(args.check_ids)
+    if args.required:
+        for check_id in _required_check_ids(task):
+            if check_id not in check_ids:
+                check_ids.append(check_id)
+    if not check_ids:
+        return fail(
+            "VERIFY DENIED — no checks named",
+            "cgel: pass one or more check ids, or --required for every "
+            "check the contract's criteria name.",
+        )
+    known = registry.get("checks") or {}
+    unknown = [
+        check_id
+        for check_id in check_ids
+        if not isinstance(known.get(check_id), dict)
+        or not known.get(check_id, {}).get("command")
+    ]
+    if unknown:
+        return fail(
+            "VERIFY DENIED — unknown check '%s'" % "', '".join(unknown),
+            "cgel: registered checks: %s"
+            % (", ".join(sorted(known.keys())) or "none"),
+            "cgel: adding a check edits %s — a governance path; do it before "
+            "seal or via a modify-verification-registry task."
+            % C.REGISTRY_REL_PATH,
+        )
+
+    results = []
+    for check_id in check_ids:
+        status, exit_code, chain_hash, tail = _run_check(
+            root, task, check_id, registry, registry_digest
+        )
+        results.append((check_id, status, exit_code, chain_hash, tail))
+        if len(check_ids) > 1:
+            print("  %s: %s (exit=%s)" % (check_id, status, exit_code), file=sys.stderr)
+
+    if len(results) == 1:
+        check_id, status, exit_code, chain_hash, tail = results[0]
+        line = "VERIFY %s check=%s exit=%s evidence=%s" % (
+            status.upper(),
+            check_id,
+            exit_code,
+            chain_hash,
+        )
+        if status == "pass":
+            return ok(line)
+        return fail(line, *tail)
+
+    failed = [r for r in results if r[1] != "pass"]
+    if not failed:
+        return ok(
+            "VERIFY PASS — %d/%d checks (%s)"
+            % (len(results), len(results), ", ".join(r[0] for r in results))
+        )
+    details = []
+    for check_id, _status, _exit, _hash, tail in failed:
+        details.append("cgel: --- %s failing output tail ---" % check_id)
+        details.extend(tail)
+    return fail(
+        "VERIFY FAIL — %d/%d checks failed (%s)"
+        % (len(failed), len(results), ", ".join(r[0] for r in failed)),
+        *details
+    )
+
+
+def cmd_audit(args):
+    root = require_repo_root()
+    task = resolve_task_or_fail(root, args.task, "AUDIT")
+    if task is None:
+        return 1
     task_id = task["task_id"]
     tdir = C.task_dir(root, task_id)
     seed = C.chain_seed(task_id)
@@ -634,20 +818,27 @@ def cmd_audit(_args):
 
 
 def _evidence_state(root, task_id):
-    """Latest evidence per check id, with the two freshness reference points."""
+    """Latest evidence per check id, with the freshness reference points."""
     tdir = C.task_dir(root, task_id)
     latest = {}
     for rec in C.read_jsonl(os.path.join(tdir, C.EVIDENCE_FILE)):
         if rec.get("type") == "evidence":
             latest[(rec.get("check") or {}).get("id")] = rec
-    return latest, C.workspace_snapshot(root), C.count_edit_events(tdir)
+    return latest, C.workspace_snapshot(root), C.edit_event_paths(tdir)
 
 
-def _evidence_problem(rec, check_id, sealed, bundle, snapshot, edit_seq):
+def _evidence_problem(rec, check_id, sealed, bundle, snapshot, edit_paths, check_def):
     """Why this check's latest evidence cannot carry a claim, or None.
 
     PASS and ADVANCE both rest on this one rule, so the two cannot drift into
     disagreeing about what "verified" means.
+
+    A check may declare `watch` globs in the registry: then only changes
+    touching a watched path stale its evidence — a README edit no longer
+    voids the whole suite's records. No watch (the default) keeps today's
+    behavior: any workspace change stales everything. A moved HEAD always
+    stales (a commit re-bases every path). The watch list is authored with
+    the check and trusted exactly as far as the command itself (D-37).
     """
     if rec is None:
         return "no evidence — run `cgel verify %s`" % check_id
@@ -658,10 +849,25 @@ def _evidence_problem(rec, check_id, sealed, bundle, snapshot, edit_seq):
         or rec.get("governance_digest") != bundle["digest"]
     ):
         return "evidence bound to a different seal — re-verify"
+    watch = (check_def or {}).get("watch") or []
     if (rec.get("workspace") or {}).get("diff_digest") != snapshot["diff_digest"]:
-        return "evidence stale — workspace changed after it was recorded; re-verify"
-    if rec.get("edit_seq") != edit_seq:
-        return "evidence stale — edits recorded after it; re-verify"
+        changed = (
+            C.snapshot_changed_paths(rec.get("workspace"), snapshot)
+            if watch
+            else None
+        )
+        if changed is None or any(C.path_matches(p, watch) for p in changed):
+            return "evidence stale — workspace changed after it was recorded; re-verify"
+    recorded_seq = rec.get("edit_seq")
+    if recorded_seq != len(edit_paths):
+        stale = True
+        if watch and isinstance(recorded_seq, int) and 0 <= recorded_seq <= len(
+            edit_paths
+        ):
+            later = edit_paths[recorded_seq:]
+            stale = any(C.path_matches(p or "", watch) for p in later)
+        if stale:
+            return "evidence stale — edits recorded after it; re-verify"
     return None
 
 
@@ -683,11 +889,19 @@ def _advance_problems(root, task, pending):
             "there is nothing to advance on; decide REPLAN, or reopen the "
             "iteration with --expected-checks"
         ]
-    latest, snapshot, edit_seq = _evidence_state(root, task["task_id"])
+    latest, snapshot, edit_paths = _evidence_state(root, task["task_id"])
+    registry, _ = C.load_registry(root)
+    defs = registry.get("checks") or {}
     problems = []
     for check_id in checks:
         problem = _evidence_problem(
-            latest.get(check_id), check_id, sealed, bundle, snapshot, edit_seq
+            latest.get(check_id),
+            check_id,
+            sealed,
+            bundle,
+            snapshot,
+            edit_paths,
+            defs.get(check_id),
         )
         if problem:
             problems.append("%s: %s" % (check_id, problem))
@@ -719,7 +933,9 @@ def _pass_problems(root, task):
     if problems:
         return problems
 
-    latest, snapshot, edit_seq = _evidence_state(root, task_id)
+    latest, snapshot, edit_paths = _evidence_state(root, task_id)
+    registry, _ = C.load_registry(root)
+    defs = registry.get("checks") or {}
 
     for criterion in sealed["contract"]["acceptance_criteria"]:
         checks = criterion.get("required_checks") or []
@@ -732,7 +948,13 @@ def _pass_problems(root, task):
             continue
         for check_id in checks:
             problem = _evidence_problem(
-                latest.get(check_id), check_id, sealed, bundle, snapshot, edit_seq
+                latest.get(check_id),
+                check_id,
+                sealed,
+                bundle,
+                snapshot,
+                edit_paths,
+                defs.get(check_id),
             )
             if problem:
                 problems.append("%s/%s: %s" % (criterion["id"], check_id, problem))
@@ -760,7 +982,7 @@ def _pass_problems(root, task):
             )
         elif (latest.get("workspace") or {}).get("diff_digest") != snapshot[
             "diff_digest"
-        ] or latest.get("edit_seq") != edit_seq:
+        ] or latest.get("edit_seq") != len(edit_paths):
             problems.append(
                 "semantic findings stale — workspace changed after the verifier "
                 "ran; re-run it"
@@ -943,16 +1165,25 @@ def cmd_check_doctor(_args):
     )
 
 
+def _registry_frozen(root):
+    """The registry is sealed inside every open task's governance bundle."""
+    tasks = C.open_tasks(root)
+    if not tasks:
+        return None
+    task = tasks[0]
+    return fail(
+        "CHECK DENIED — task %s is %s; the registry is part of the sealed "
+        "governance bundle" % (task["task_id"], task["lifecycle"]),
+        "cgel: close the task first, or run a dedicated "
+        "modify-verification-registry task.",
+    )
+
+
 def cmd_check_add(args):
     root = require_repo_root()
-    task = C.load_state(root)
-    if task["lifecycle"] != "NO_TASK":
-        return fail(
-            "CHECK DENIED — task %s is %s; the registry is part of the sealed "
-            "governance bundle" % (task["task_id"], task["lifecycle"]),
-            "cgel: close the task first, or run a dedicated "
-            "modify-verification-registry task.",
-        )
+    frozen = _registry_frozen(root)
+    if frozen is not None:
+        return frozen
     if not _CHECK_ID_RE.match(args.check_id):
         return fail("CHECK DENIED — invalid check id '%s'" % args.check_id)
     if not args.check_command_str.strip():
@@ -972,6 +1203,9 @@ def cmd_check_add(args):
         entry["timeout_seconds"] = args.timeout
     if args.workdir.strip():
         entry["working_directory"] = args.workdir.strip()
+    watch = [s.strip() for s in args.watch.split(",") if s.strip()]
+    if watch:
+        entry["watch"] = watch
 
     vacuous, detail = _canary_passes(command, args.timeout or 600, root)
     if vacuous and not args.allow_unproven:
@@ -1025,14 +1259,9 @@ def cmd_check_list(_args):
 
 def cmd_check_remove(args):
     root = require_repo_root()
-    task = C.load_state(root)
-    if task["lifecycle"] != "NO_TASK":
-        return fail(
-            "CHECK DENIED — task %s is %s; the registry is part of the sealed "
-            "governance bundle" % (task["task_id"], task["lifecycle"]),
-            "cgel: close the task first, or run a dedicated "
-            "modify-verification-registry task.",
-        )
+    frozen = _registry_frozen(root)
+    if frozen is not None:
+        return frozen
     registry, _ = C.load_registry(root)
     checks = registry.get("checks") or {}
     if args.check_id not in checks:
@@ -1077,9 +1306,9 @@ def cmd_semantic(args):
         print("ERROR usage")
         return 3
     root = require_repo_root()
-    task = C.load_state(root)
-    if task["lifecycle"] == "NO_TASK":
-        return fail("SEMANTIC DENIED — no sealed task")
+    task = resolve_task_or_fail(root, args.task, "SEMANTIC")
+    if task is None:
+        return 1
     if task["lifecycle"] == "BLOCKED":
         return fail(
             "SEMANTIC DENIED — task is BLOCKED (%s)"
@@ -1238,11 +1467,11 @@ def _build_attestation(root, task):
     }
 
 
-def cmd_attest(_args):
+def cmd_attest(args):
     root = require_repo_root()
-    task = C.load_state(root)
-    if task["lifecycle"] == "NO_TASK":
-        return fail("ATTEST DENIED — no current task")
+    task = resolve_task_or_fail(root, args.task, "ATTEST")
+    if task is None:
+        return 1
     attestation = _build_attestation(root, task)
     tdir = C.task_dir(root, task["task_id"])
     path = os.path.join(tdir, "attestation", "attestation.json")
@@ -1279,9 +1508,9 @@ def cmd_iterate(args):
 
 def cmd_iterate_open(args):
     root = require_repo_root()
-    task = C.load_state(root)
-    if task["lifecycle"] == "NO_TASK":
-        return fail("ITERATE DENIED — no sealed task")
+    task = resolve_task_or_fail(root, args.task, "ITERATE")
+    if task is None:
+        return 1
     if task["lifecycle"] == "BLOCKED":
         return fail(
             "ITERATE DENIED — task is BLOCKED (%s)"
@@ -1295,7 +1524,8 @@ def cmd_iterate_open(args):
     if not args.intended_change.strip():
         return fail(
             "ITERATE DENIED — --intended-change required",
-            "cgel: state the smallest change that tests your hypothesis.",
+            "cgel: state the smallest change that tests your hypothesis "
+            "(alias: --change).",
         )
 
     tdir = C.task_dir(root, task["task_id"])
@@ -1339,30 +1569,76 @@ def cmd_iterate_open(args):
     )
     if task["lifecycle"] == "SEALED":
         C.update_state(root, task["task_id"], lifecycle="ACTIVE", activated_at=C.utc_now())
+    details = []
+    if not record["expected_checks"]:
+        details.append(
+            "cgel: note — no --expected-checks declared, so ADVANCE will be "
+            "refused for this iteration; only RETRY/REPLAN/ROLLBACK can close it."
+        )
     return ok(
         "ITERATE OPEN — iteration %d/%d task=%s"
-        % (number, max_iterations, task["task_id"])
+        % (number, max_iterations, task["task_id"]),
+        *details
     )
+
+
+DECISIONS = ("ADVANCE", "RETRY", "REPLAN", "ROLLBACK_ITERATION")
+
+
+def _normalize_decision(raw):
+    """Case-insensitive, unique-prefix decision names: ADV, retry, roll — the
+    --help round-trips the transcripts are full of were all spelling doubt."""
+    text = (raw or "").strip().upper().replace("-", "_")
+    if not text:
+        return None
+    matches = [d for d in DECISIONS if d == text or d.startswith(text)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def cmd_iterate_decide(args):
     root = require_repo_root()
-    task = C.load_state(root)
-    if task["lifecycle"] == "NO_TASK":
-        return fail("DECIDE DENIED — no sealed task")
+    task = resolve_task_or_fail(root, args.task, "DECIDE")
+    if task is None:
+        return 1
     if task["lifecycle"] == "BLOCKED":
         return fail(
             "DECIDE DENIED — task is BLOCKED (%s)"
             % task["state"].get("blocked_reason", "?")
         )
+    decision = _normalize_decision(args.decision)
+    if decision is None:
+        return fail(
+            "DECIDE DENIED — unknown decision %r" % args.decision,
+            "cgel: pick one of %s (unique prefixes work: ADV, RET, REP, ROLL)."
+            % "|".join(DECISIONS),
+        )
+    args.decision = decision
     tdir = C.task_dir(root, task["task_id"])
     records = C.iteration_records(tdir)
     pending = C.open_iteration(records)
     if not pending:
         return fail(
             "DECIDE DENIED — no open iteration",
-            "cgel: open one first: `cgel iterate open --intended-change ...`.",
+            "cgel: open one first: `cgel iterate open --intended-change ...` "
+            "— or if the work is finished, go straight to `cgel close`.",
         )
+
+    if args.verify:
+        # One roundtrip instead of verify-then-decide: freshly run the
+        # iteration's own expected checks, recording evidence as `cgel
+        # verify` would, then judge the decision against it.
+        registry, registry_digest = C.load_registry(root)
+        refused = _verify_preflight(root, task, "DECIDE")
+        if refused is not None:
+            return refused
+        for check_id in pending.get("expected_checks") or []:
+            status, exit_code, _hash, _tail = _run_check(
+                root, task, check_id, registry, registry_digest
+            )
+            print(
+                "  verify %s: %s (exit=%s)" % (check_id, status, exit_code),
+                file=sys.stderr,
+            )
 
     if args.decision == "ADVANCE":
         problems = _advance_problems(root, task, pending)
@@ -1458,9 +1734,42 @@ def cmd_iterate_decide(args):
 
 def cmd_unblock(args):
     root = require_repo_root()
-    task = C.load_state(root)
+    task = resolve_task_or_fail(root, args.task, "UNBLOCK")
+    if task is None:
+        return 1
     if task["lifecycle"] != "BLOCKED":
-        return fail("UNBLOCK DENIED — task is not BLOCKED")
+        # Widening a budget BEFORE it runs out is legitimate — refusing it
+        # made the user type unblock twice in real use (once too early, once
+        # after the block finally landed).
+        if args.add_iterations < 1 and args.add_replans < 1:
+            return fail(
+                "UNBLOCK DENIED — task is not BLOCKED",
+                "cgel: to widen a budget before exhaustion, pass "
+                "--add-iterations/--add-replans.",
+            )
+        state = task["state"]
+        fields = {}
+        if args.add_iterations:
+            fields["budget_extra_iterations"] = (
+                state.get("budget_extra_iterations", 0) + args.add_iterations
+            )
+        if args.add_replans:
+            fields["budget_extra_replans"] = (
+                state.get("budget_extra_replans", 0) + args.add_replans
+            )
+        C.update_state(root, task["task_id"], **fields)
+        return ok(
+            "UNBLOCK OK — %s budget extended (iterations +%d, replans +%d); "
+            "task stays %s"
+            % (
+                task["task_id"],
+                args.add_iterations,
+                args.add_replans,
+                task["lifecycle"],
+            ),
+            "cgel: unblock is a USER action. If the model ran this without "
+            "the user's say-so, that is a contract violation — tell the user.",
+        )
     reason = task["state"].get("blocked_reason", "?")
     if reason == "sealed-guidebook-bundle-changed":
         return fail(
@@ -1500,16 +1809,7 @@ def cmd_unblock(args):
     )
 
 
-def cmd_status(_args):
-    root = require_repo_root()
-    task = C.load_state(root)
-    if task["lifecycle"] == "NO_TASK":
-        contract, _ = load_contract(root)
-        if contract is not None and not C.validate_contract(contract):
-            return ok(
-                "STATUS DRAFT task=%s (not sealed)" % contract["task"]["id"]
-            )
-        return ok("STATUS NO_TASK")
+def _status_line(root, task):
     tdir = C.task_dir(root, task["task_id"])
     evidence = [
         r
@@ -1519,22 +1819,54 @@ def cmd_status(_args):
     extra = " evidence=%d" % len(evidence)
     if task["lifecycle"] == "BLOCKED":
         extra += " reason=%s" % task["state"].get("blocked_reason", "?")
+    pending = C.open_iteration(C.iteration_records(tdir))
+    if pending:
+        extra += " open_iteration=%d" % pending["iteration"]
+    return "%s task=%s digest=%s%s" % (
+        task["lifecycle"],
+        task["task_id"],
+        task["state"].get("contract_digest"),
+        extra,
+    )
+
+
+def cmd_status(args):
+    root = require_repo_root()
+    tasks = C.open_tasks(root)
+    if args.task:
+        tasks = [t for t in tasks if t["task_id"] == args.task]
+        if not tasks:
+            return fail(
+                "STATUS DENIED — no open task '%s'" % args.task,
+                "cgel: open tasks: %s"
+                % (", ".join(t["task_id"] for t in C.open_tasks(root)) or "none"),
+            )
+    if not tasks:
+        for draft_path in _draft_paths(root):
+            try:
+                contract = C.load_json(draft_path)
+            except Exception:
+                continue
+            if not C.validate_contract(contract):
+                return ok(
+                    "STATUS DRAFT task=%s (not sealed)" % contract["task"]["id"]
+                )
+        return ok("STATUS NO_TASK")
+    if len(tasks) == 1:
+        return ok("STATUS " + _status_line(root, tasks[0]))
+    for task in tasks:
+        print("  " + _status_line(root, task), file=sys.stderr)
     return ok(
-        "STATUS %s task=%s digest=%s%s"
-        % (
-            task["lifecycle"],
-            task["task_id"],
-            task["state"].get("contract_digest"),
-            extra,
-        )
+        "STATUS OPEN — %d task(s): %s (pass --task <id> on every verb)"
+        % (len(tasks), ", ".join(t["task_id"] for t in tasks))
     )
 
 
 def cmd_close(args):
     root = require_repo_root()
-    task = C.load_state(root)
-    if task["lifecycle"] == "NO_TASK":
-        return fail("CLOSE DENIED — no active task")
+    task = resolve_task_or_fail(root, args.task, "CLOSE")
+    if task is None:
+        return 1
     if args.as_status == "PASS":
         problems = _pass_problems(root, task)
         if problems:
@@ -1545,15 +1877,16 @@ def cmd_close(args):
                 % len(problems)
             )
     store = C.repo_state_dir(root)
-    tdir = C.task_dir(root, task["task_id"])
-    state = dict(C.load_state(root)["state"])
+    task_id = task["task_id"]
+    tdir = C.task_dir(root, task_id)
+    state = dict(task["state"])
     state["lifecycle"] = "TERMINAL"
     state["terminal_status"] = args.as_status
     state["closed_at"] = C.utc_now()
     state["evidence_chain_head"] = C.chain_head(os.path.join(tdir, C.EVIDENCE_FILE))
     if args.reason:
         state["terminal_reason"] = args.reason
-    C.atomic_write_json(os.path.join(store, task["task_id"], "state.json"), state)
+    C.atomic_write_json(os.path.join(tdir, "state.json"), state)
     details = []
     if args.as_status == "PASS":
         closed = dict(task)
@@ -1565,11 +1898,67 @@ def cmd_close(args):
         except Exception as exc:
             C._debug("close:attest", exc)
             details.append("cgel: attestation export failed (non-fatal)")
-    try:
+    # The draft slot frees up with the task: a stale contract.json squatting
+    # in .task/ blocked the NEXT task more than once in real use. The sealed
+    # copy lives in the state store; deleting the mirror loses nothing.
+    for draft_path in _draft_paths(root):
+        try:
+            draft = C.load_json(draft_path)
+        except Exception:
+            continue
+        if isinstance(draft, dict) and (draft.get("task") or {}).get("id") == task_id:
+            try:
+                os.unlink(draft_path)
+                details.append(
+                    "cgel: removed draft %s (sealed copy stays in the store)."
+                    % os.path.relpath(draft_path, root)
+                )
+            except OSError as exc:
+                C._debug("close:draft", exc)
+    dirty = _dirty_paths_intersecting_scope(
+        root, task["sealed"]["contract"]["scope"]["allowed"]
+    )
+    if dirty:
+        details.append(
+            "cgel: %d uncommitted file(s) remain inside this task's scope — "
+            "commit or discard them, or the next seal will trip over them."
+            % len(dirty)
+        )
+    try:  # legacy pointer from pre-multi-task versions
         os.unlink(os.path.join(store, "CURRENT"))
     except OSError as exc:
         C._debug("close:CURRENT", exc)
-    return ok("CLOSE OK — %s -> %s" % (task["task_id"], args.as_status), *details)
+    return ok("CLOSE OK — %s -> %s" % (task_id, args.as_status), *details)
+
+
+def cmd_schema(args):
+    """Print a shipped schema so nobody hunts the plugin cache for it —
+    the cache path changes every release and defeated everyone's memory."""
+    path = os.path.join(PLUGIN_ROOT, "schemas", "%s.schema.json" % args.name)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+    except OSError:
+        return fail("SCHEMA DENIED — unknown schema '%s'" % args.name)
+    print(body, end="" if body.endswith("\n") else "\n")
+    return ok("SCHEMA OK — %s" % args.name)
+
+
+def _add_task_arg(parser):
+    parser.add_argument(
+        "--task",
+        default="",
+        help="task id; required only when several tasks are open",
+    )
+
+
+def _add_contract_arg(parser):
+    parser.add_argument(
+        "--contract",
+        default="",
+        help="contract draft path (default .task/contract.json; parallel "
+        "drafts live at .task/<id>.contract.json)",
+    )
 
 
 def main():
@@ -1577,8 +1966,14 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("init", help="create .cgel/ and .task/ (activates the gate)")
-    sub.add_parser("validate", help="validate .task/contract.json")
-    sub.add_parser("summary", help="print normalized contract summary + digest")
+    p_validate = sub.add_parser("validate", help="validate the contract draft")
+    _add_contract_arg(p_validate)
+    p_summary = sub.add_parser(
+        "summary",
+        help="validate + print normalized contract summary + digest "
+        "(no separate `cgel validate` needed)",
+    )
+    _add_contract_arg(p_summary)
 
     p_seal = sub.add_parser("seal", help="seal the drafted contract")
     p_seal.add_argument("task_id")
@@ -1588,37 +1983,63 @@ def main():
         action="store_true",
         help="user-confirmed: task may build on uncommitted changes in scope",
     )
+    _add_contract_arg(p_seal)
 
-    sub.add_parser("status", help="one-line lifecycle status")
+    p_status = sub.add_parser(
+        "status", help="lifecycle status (all open tasks, or --task <id>)"
+    )
+    _add_task_arg(p_status)
 
     p_verify = sub.add_parser(
-        "verify", help="run a registered check and record hash-chained evidence"
+        "verify",
+        help="run registered check(s) and record hash-chained evidence",
     )
-    p_verify.add_argument("check_id")
+    p_verify.add_argument("check_ids", nargs="*", metavar="check_id")
+    p_verify.add_argument(
+        "--required",
+        action="store_true",
+        help="also run every check the contract's criteria require",
+    )
+    _add_task_arg(p_verify)
 
     p_iter = sub.add_parser("iterate", help="open or decide a loop iteration")
     iter_sub = p_iter.add_subparsers(dest="iter_command")
     p_open = iter_sub.add_parser("open", help="open the next iteration")
     p_open.add_argument("--hypothesis", default="")
-    p_open.add_argument("--intended-change", dest="intended_change", default="")
     p_open.add_argument(
-        "--expected-checks", dest="expected_checks", default="",
+        "--intended-change", "--change", dest="intended_change", default=""
+    )
+    p_open.add_argument(
+        "--expected-checks", "--expect", "--checks",
+        dest="expected_checks", default="",
         help="comma-separated check ids expected to move",
     )
+    _add_task_arg(p_open)
     p_decide = iter_sub.add_parser("decide", help="close the open iteration")
     p_decide.add_argument(
-        "decision", choices=["ADVANCE", "RETRY", "REPLAN", "ROLLBACK_ITERATION"]
+        "decision",
+        help="ADVANCE|RETRY|REPLAN|ROLLBACK_ITERATION (unique prefixes work)",
     )
     p_decide.add_argument("--lesson", default="")
     p_decide.add_argument("--override-reason", dest="override_reason", default="")
     p_decide.add_argument("--approved-by", dest="approved_by", default="")
+    p_decide.add_argument(
+        "--verify",
+        action="store_true",
+        help="freshly run this iteration's expected checks first (one "
+        "roundtrip instead of verify-then-decide)",
+    )
+    _add_task_arg(p_decide)
 
     p_unblock = sub.add_parser(
-        "unblock", help="USER action: lift a budget/environment block"
+        "unblock",
+        help="USER action: lift a budget/environment block, or widen a "
+        "budget before it runs out",
     )
     p_unblock.add_argument("--add-iterations", dest="add_iterations", type=int, default=0)
     p_unblock.add_argument("--add-replans", dest="add_replans", type=int, default=0)
     p_unblock.add_argument("--reason", default="")
+    _add_task_arg(p_unblock)
 
     p_check = sub.add_parser(
         "check", help="manage the verification registry (between tasks only)"
@@ -1635,6 +2056,12 @@ def main():
     )
     p_check_add.add_argument("--timeout", type=int, default=0, help="seconds (default 600)")
     p_check_add.add_argument("--workdir", default="")
+    p_check_add.add_argument(
+        "--watch",
+        default="",
+        help="comma-separated globs: evidence from this check only goes "
+        "stale when a changed path matches one (default: any change)",
+    )
     p_check_add.add_argument("--force", action="store_true")
     p_check_add.add_argument(
         "--allow-unproven",
@@ -1661,14 +2088,25 @@ def main():
     p_sem_rec.add_argument(
         "--file", default="", help="findings JSON (default .task/findings.json)"
     )
+    _add_task_arg(p_sem_rec)
 
-    sub.add_parser("attest", help="export a sanitized attestation")
+    p_attest = sub.add_parser("attest", help="export a sanitized attestation")
+    _add_task_arg(p_attest)
 
-    sub.add_parser(
+    p_audit = sub.add_parser(
         "audit", help="verify evidence chains, seal bindings, governance bundle"
     )
+    _add_task_arg(p_audit)
 
-    p_close = sub.add_parser("close", help="close the active task")
+    p_schema = sub.add_parser(
+        "schema", help="print a shipped schema (task-contract, evidence, ...)"
+    )
+    p_schema.add_argument(
+        "name",
+        choices=["task-contract", "evidence", "findings", "attestation"],
+    )
+
+    p_close = sub.add_parser("close", help="close an open task")
     p_close.add_argument(
         "--as",
         dest="as_status",
@@ -1676,6 +2114,7 @@ def main():
         choices=["ROLLED_BACK", "ESCALATE", "ABORT", "PASS"],
     )
     p_close.add_argument("--reason", default="")
+    _add_task_arg(p_close)
 
     args = parser.parse_args()
     handlers = {
@@ -1692,6 +2131,7 @@ def main():
         "rules": cmd_rules,
         "semantic": cmd_semantic,
         "attest": cmd_attest,
+        "schema": cmd_schema,
         "close": cmd_close,
     }
     if args.command not in handlers:

@@ -64,11 +64,14 @@ def ensure_cli_symlink():
         C._debug("session_start:symlink", exc)
 
 
-def summary_text(repo_root, task):
+def one_task_text(repo_root, task, addressed):
+    """Compact per-task block. `addressed` adds --task hints when several
+    tasks are open and every verb must say which one it means."""
     sealed = task["sealed"]
     state = task["state"]
     contract = sealed["contract"]
-    tdir = C.task_dir(repo_root, task["task_id"])
+    task_id = task["task_id"]
+    tdir = C.task_dir(repo_root, task_id)
     records = C.iteration_records(tdir)
     opens = [r for r in records if r.get("type") == "iteration_open"]
     decisions = [r for r in records if r.get("type") == "iteration_decision"]
@@ -78,9 +81,8 @@ def summary_text(repo_root, task):
     replans = sum(1 for d in decisions if d.get("decision") == "REPLAN")
 
     lines = [
-        "CGEL resume — a sealed task is in progress; continue it, do not restart.",
         "Task: %s (%s) — %s" % (
-            task["task_id"], contract["task"]["type"], contract["task"]["goal"]
+            task_id, contract["task"]["type"], contract["task"]["goal"][:400]
         ),
         "Lifecycle: %s%s" % (
             task["lifecycle"],
@@ -93,11 +95,12 @@ def summary_text(repo_root, task):
         % (len(opens), max_iter, replans, max_replans),
     ]
 
+    suffix = " --task %s" % task_id if addressed else ""
     pending = C.open_iteration(records)
     if pending:
         lines.append(
-            "Open iteration %d: %s (decide with `cgel iterate decide ...`)"
-            % (pending["iteration"], pending.get("intended_change") or "?")
+            "Open iteration %d: %s (decide with `cgel iterate decide ...%s`)"
+            % (pending["iteration"], pending.get("intended_change") or "?", suffix)
         )
     signature = C.latest_failure_signature(tdir)
     if signature:
@@ -115,6 +118,24 @@ def summary_text(repo_root, task):
         if r.get("type") == "evidence"
     ]
     lines.append("Evidence records: %d" % len(evidence))
+    return "\n".join(lines)
+
+
+def summary_text(repo_root, tasks):
+    addressed = len(tasks) > 1
+    lines = [
+        "CGEL resume — %s in progress; continue, do not restart."
+        % ("a sealed task is" if len(tasks) == 1 else "%d sealed tasks are" % len(tasks))
+    ]
+    if addressed:
+        lines.append(
+            "Several tasks are open: pass `--task <id>` on every cgel verb "
+            "and only touch the task this session owns."
+        )
+    for task in tasks:
+        lines.append("")
+        lines.append(one_task_text(repo_root, task, addressed))
+    lines.append("")
     lines.append(
         "Next: `cgel status` for the current line; work only inside scope; "
         "PASS needs fresh `cgel verify` evidence for every criterion."
@@ -150,9 +171,14 @@ def main():
     sections = []
     if C.read_config(repo_root).get("ai_attribution_guard") != "off":
         sections.append(GIT_ATTRIBUTION_RULE)
-    task = C.load_state(repo_root)
-    if task["lifecycle"] != "NO_TASK":
-        sections.append(summary_text(repo_root, task))
+    tasks = C.open_tasks(repo_root)
+    if tasks:
+        sections.append(summary_text(repo_root, tasks))
+    registry, _ = C.load_registry(repo_root)
+    checks = sorted((registry.get("checks") or {}).keys())
+    if checks:
+        # saves the per-session recon ritual (cat registry, cgel check list)
+        sections.append("CGEL checks registered: %s" % ", ".join(checks))
     if sections:
         emit("\n\n".join(sections))
     return 0

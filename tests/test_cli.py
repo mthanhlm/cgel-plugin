@@ -108,17 +108,61 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("(reseal)", decision_line(out))
 
-    def test_sealing_a_different_task_over_an_open_one_denied(self):
+    def test_sealing_a_second_task_alongside_an_open_one(self):
+        # D-39: several tasks may be open at once. Overlapping scopes are a
+        # warned choice, not a refusal — and every verb must then say which
+        # task it means.
         self.write_contract(CONTRACT)
         code, _, err = self.cli("seal", "TASK-C1", "--digest", self.summary_digest())
         self.assertEqual(code, 0, err)
         other = copy.deepcopy(CONTRACT)
         other["task"]["id"] = "TASK-C2"
         self.write_contract(other)
-        code, out, _ = self.cli("seal", "TASK-C2", "--digest", self.summary_digest())
-        self.assertEqual(code, 1)
-        self.assertIn("SEAL DENIED", decision_line(out))
+        code, out, err = self.cli("seal", "TASK-C2", "--digest", self.summary_digest())
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("SEAL OK", decision_line(out))
+        self.assertIn("overlaps open task(s) TASK-C1", err)
+        code, out, err = self.cli("status")
+        self.assertEqual(code, 0)
+        self.assertIn("STATUS OPEN — 2 task(s)", decision_line(out))
         self.assertIn("TASK-C1", decision_line(out))
+        self.assertIn("TASK-C2", decision_line(out))
+        # an unaddressed verb must refuse rather than guess
+        code, out, _ = self.cli("close", "--as", "ABORT")
+        self.assertEqual(code, 1)
+        self.assertIn("--task", decision_line(out))
+        code, out, _ = self.cli("close", "--as", "ABORT", "--task", "TASK-C2")
+        self.assertEqual(code, 0, out)
+        code, out, _ = self.cli("status")
+        self.assertIn("STATUS SEALED task=TASK-C1", decision_line(out))
+
+    def test_disjoint_second_task_seals_without_overlap_warning(self):
+        self.write_contract(CONTRACT)
+        self.cli("seal", "TASK-C1", "--digest", self.summary_digest())
+        other = copy.deepcopy(CONTRACT)
+        other["task"]["id"] = "TASK-C2"
+        other["scope"]["allowed"] = ["docs/**"]
+        with open(
+            os.path.join(self.repo, ".task", "TASK-C2.contract.json"),
+            "w",
+            encoding="utf-8",
+        ) as fh:
+            json.dump(other, fh)
+        code, out, err = self.cli(
+            "summary", "--contract", ".task/TASK-C2.contract.json"
+        )
+        self.assertEqual(code, 0, err)
+        digest = decision_line(out).split("digest=")[1].split()[0]
+        code, out, err = self.cli(
+            "seal",
+            "TASK-C2",
+            "--digest",
+            digest,
+            "--contract",
+            ".task/TASK-C2.contract.json",
+        )
+        self.assertEqual(code, 0, out + err)
+        self.assertNotIn("overlaps", err)
 
     def test_status_transitions(self):
         code, out, _ = self.cli("status")
@@ -133,7 +177,12 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("STATUS SEALED task=TASK-C1", decision_line(out))
         self.cli("close", "--as", "ABORT")
         _, out, _ = self.cli("status")
-        self.assertIn("STATUS DRAFT", decision_line(out))  # draft file remains
+        # close removes the matching draft: a stale contract.json squatting
+        # in .task/ repeatedly blocked the next task in real use
+        self.assertEqual(decision_line(out), "STATUS NO_TASK")
+        self.assertFalse(
+            os.path.isfile(os.path.join(self.repo, ".task", "contract.json"))
+        )
 
     def test_close_pass_denied_in_phase0(self):
         self.write_contract(CONTRACT)

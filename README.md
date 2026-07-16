@@ -59,10 +59,77 @@ design, debate rounds v0.1→v1.0). All four MVP phases are implemented:
 | No Edit/Write before a sealed contract | `PreToolUse` gate (`scripts/contract_gate.py`) | HARD_ENFORCED for Edit/Write/NotebookEdit |
 | Edits only inside `scope.allowed`, never `scope.forbidden` | same gate, sealed scope read from the state store (not the editable draft) | HARD_ENFORCED for Edit/Write/NotebookEdit |
 | Governance paths (`.claude/**`, `.cgel/**`, `docs/standards/**`, `docs/adr/**`, hook config) read-only unless the sealed contract grants the matching protected capability | same gate | HARD_ENFORCED for Edit/Write/NotebookEdit |
-| Seal binds the exact contract the user saw | digest ceremony: `cgel summary` → user approval → `cgel seal <id> --digest sha256:...` | HUMAN_GATED via the Bash permission prompt |
+| Seal binds the exact contract the user saw | digest ceremony: `cgel summary` → one AskUserQuestion carrying the digest → user taps Approve → `cgel seal <id> --digest sha256:...` (the approval gate verifies the recorded answer and lets the seal through with no further prompt) | HUMAN_GATED via the harness-recorded question answer (tamper-evident; the permission prompt remains the harder anchor if you keep an `ask` rule and turn the gate off) |
 | User's uncommitted work is protected | dirty-tree check at seal (`--allow-dirty` only after explicit user confirmation) | EVIDENCE_GATED |
 | No destructive git commands | `PreToolUse` Bash guard (`scripts/command_guard.py`), fail-closed | guardrail on the command string |
 | No AI attribution in commits/PRs | `cgel init` sets `attribution.commit`/`pr`/`sessionUrl` to `""` in `.claude/settings.json`, so the harness never authors the trailer at all (covers `$EDITOR` and `--body-file`); the Bash guard additionally blocks a `git commit` / `gh pr create\|edit` whose text carries a `Co-Authored-By: Claude` trailer or generated-with footer typed inline; `SessionStart` injects the standing rule as the belt-and-braces third layer | HARD_ENFORCED (settings) + guardrail on the command string |
+
+## Approval by question
+
+Privileged commands — `cgel seal`, `cgel unblock`, failure overrides,
+`check add --force/--allow-unproven`, `check remove`, `--allow-dirty`, and
+the destructive git commands the guard blocks — run only when the session
+transcript carries the user's recorded **AskUserQuestion** answer:
+
+- the model asks one short plain-language question (goal, files, checks,
+  risk) whose text contains the binding token — a seal's digest prefix, or
+  the exact command in backticks for everything else;
+- the user taps an option starting with **Approve** (any other answer,
+  including free text, is not an approval);
+- the `approval_gate` hook finds that answer in the transcript, consumes it
+  (one approval, one command — except a seal approval, which stays valid
+  for resealing the *same* digest after a governance-bundle change), and
+  auto-allows the call so no second permission prompt fires. One gate, not
+  two.
+
+Without a matching approval the command is denied with instructions to ask
+first; the user can always run the command themselves instead. Several
+tasks may be open at once (see below), and every verb then takes
+`--task <id>`.
+
+Trust class, stated plainly: the transcript is written by the Claude Code
+harness from a real UI interaction — a model cannot answer its own
+question — but on a Profile A host it is a same-principal file like
+everything else, so this anchor is **tamper-evident, not tamper-proof**.
+If you want the hard prompt back: `.cgel/config.json`
+`{"approval_gate": "off"}` and keep `ask` rules for `Bash(cgel seal*)` /
+`Bash(cgel unblock*)`.
+
+## Two tasks at once
+
+The store keeps every open task, not one CURRENT pointer. Sealing a second
+task while the first is open is allowed (the seal warns when the two
+`scope.allowed` overlap), so one session can code while another answers a
+question or starts new work in the same repo:
+
+- draft the second contract at `.task/<id>.contract.json` and pass
+  `--contract` to `summary`/`seal` — drafts stop fighting over one file;
+- pass `--task <id>` on every verb once more than one task is open —
+  unaddressed verbs refuse to guess, which is what used to let one session
+  decide another session's iteration;
+- the edit gate allows a path when ANY open task's sealed scope covers it,
+  and says why per task when none does;
+- the workspace is still shared: another task's edits stale your evidence
+  unless your checks declare `watch` globs (below) — re-verify and move on;
+- `cgel close` frees the matching draft, and a fresh seal of a previously
+  closed task id archives the old run instead of inheriting its spent
+  budgets.
+
+## Watch globs (path-scoped staleness)
+
+By default any workspace change stales all evidence — honest, but it meant
+a README edit re-ran a 35-second suite. A check may declare what it
+actually measures:
+
+```bash
+cgel check add unit-tests --command "npm test" --watch "src/**,tests/**"
+```
+
+Evidence from a watched check goes stale only when a changed path matches
+a watch glob (or when HEAD moves — a commit re-bases everything). No
+`watch` keeps the old behavior exactly. The watch list is authored with
+the check and trusted exactly as far as the command itself (D-37): a wrong
+watch is a wrong yardstick, and doctor cannot see it.
 
 ## Explicit limitations (Profile A honesty)
 
@@ -73,12 +140,16 @@ Read this before trusting the gate:
   modify any file, including the state store. Everything here is
   **tamper-evident at best, never tamper-proof**. Hard guarantees require
   Profile B (container, separate OS user, sandboxed filesystem, CI runner).
-- **The human seal anchor is the permission prompt.** `cgel seal` enforces
-  the digest match, but only the user approving (or typing) the exact seal
-  command makes it a human gate. Configure Bash permissions to `ask` for
-  `cgel seal*` if you want this prompt guaranteed.
-- **`--allow-dirty` is a consent flag, not a boundary.** The skill instructs
-  the model to ask first; the CLI cannot verify a human answered.
+- **The human seal anchor is the recorded question answer.** `cgel seal`
+  enforces the digest match; the approval gate enforces that a matching
+  AskUserQuestion answer exists in the transcript. That answer is written
+  by the harness, not the model — but the transcript is a same-principal
+  file, so the anchor is tamper-evident, not tamper-proof. The permission
+  prompt (an `ask` rule on `Bash(cgel seal*)`, gate off) and the user
+  typing the command themselves remain the harder anchors.
+- **`--allow-dirty` is question-gated consent, not a boundary.** The
+  approval gate requires the user's recorded answer approving the exact
+  command; the CLI itself still cannot verify a human answered.
 - **The command guard is a regex guardrail**, evadable by indirection. It
   catches mistakes, not adversaries.
 - **Attribution has three layers, and only the outermost is mechanical for
@@ -132,9 +203,10 @@ Read this before trusting the gate:
   so a commit after `cgel verify` makes that evidence stale — re-run
   `cgel verify` after committing. This is deliberate (cheap, honest).
 - **`cgel unblock` and failure overrides are user actions the CLI cannot
-  authenticate.** The real anchor is the Bash permission prompt — set
-  `cgel unblock*` and `cgel iterate decide *--override*` to `ask` if you
-  want the prompt guaranteed.
+  authenticate.** The approval gate requires a recorded question answer
+  quoting the exact command, consumed on use — same trust class as the
+  seal anchor above. Keep `ask` rules (gate off) if you want the raw
+  prompt instead.
 - **Semantic findings are probabilistic.** The verifier is a model with
   read-only tools; `cgel semantic record` enforces schema, rule existence,
   and freshness — not truth. Critical rules deserve a deterministic
@@ -171,7 +243,9 @@ CGEL is **opt-in per project**: nothing is gated until a repo contains a
 auto-initializes it (the skill runs `cgel init` and registers the
 project's real checks via `cgel check add`).
 
-Recommended permission setup (makes the human gates real prompts):
+No permission setup is required: the approval gate carries the human
+anchor by default (see *Approval by question*). If you prefer raw prompts,
+turn the gate off and keep:
 
 ```json
 {"permissions": {"ask": ["Bash(cgel seal*)", "Bash(cgel unblock*)"]}}
@@ -179,22 +253,27 @@ Recommended permission setup (makes the human gates real prompts):
 
 ## Command reference
 
+Every task-addressed verb takes `--task <id>` (required only when several
+tasks are open). `validate`/`summary`/`seal` take `--contract <path>` for
+parallel drafts.
+
 | Command | What it does |
 |---|---|
 | `cgel init` | activate CGEL for the project (`.cgel/`, `.task/`, registry stub; empties `attribution.*` in `.claude/settings.json`) |
-| `cgel check add/list/doctor/remove` | register (refused if the command passes with no project present) / list / re-test every check from both sides — must fail empty *and* pass in-tree / remove a check (between tasks only) |
-| `cgel validate` | schema-check `.task/contract.json` |
-| `cgel summary` | normalized contract summary + digest (show this to the user) |
-| `cgel seal <id> --digest <d>` | freeze contract + governance bundle; opens the edit gate |
-| `cgel iterate open/decide` | declare an iteration / record ADVANCE, RETRY, REPLAN, ROLLBACK_ITERATION |
-| `cgel verify <check-id>` | run a registered check, record hash-chained evidence |
+| `cgel check add/list/doctor/remove` | register (refused if the command passes with no project present; `--watch` globs scope staleness) / list / re-test every check from both sides — must fail empty *and* pass in-tree / remove a check (between tasks only) |
+| `cgel validate` | schema-check the contract draft |
+| `cgel summary` | validate + normalized contract summary + digest (put the digest in the approval question) |
+| `cgel seal <id> --digest <d>` | freeze contract + governance bundle; opens the edit gate; resealing the same digest reuses its approval |
+| `cgel iterate open/decide` | declare an iteration (`--change`, `--expect`) / record ADVANCE, RETRY, REPLAN, ROLLBACK_ITERATION — prefixes work (ADV, RET…); `decide --verify` freshly runs the expected checks first |
+| `cgel verify <id>... [--required]` | run registered check(s) in one call, record hash-chained evidence per check; `--required` covers every check the criteria name |
 | `cgel audit` | verify chains, seal bindings, governance bundle |
 | `cgel rules` | list semantic rules from `docs/standards/` |
 | `cgel semantic record` | validate + chain verifier findings from `.task/findings.json` |
-| `cgel status` | one-line lifecycle status |
-| `cgel unblock` | USER action: lift a budget block |
+| `cgel status` | lifecycle status — all open tasks, or one with `--task` |
+| `cgel unblock` | USER action: lift a budget block, or widen a budget before it runs out |
 | `cgel attest` | export a sanitized attestation |
-| `cgel close --as PASS\|ESCALATE\|ROLLED_BACK\|ABORT` | terminal status (PASS is validated) |
+| `cgel schema <name>` | print a shipped schema (task-contract, evidence, findings, attestation) |
+| `cgel close --as PASS\|ESCALATE\|ROLLED_BACK\|ABORT` | terminal status (PASS is validated); frees the matching draft |
 
 ## Usage
 
@@ -207,15 +286,14 @@ cd your-project && cgel init
 
 # task flow (the cgel:task skill walks the model through this)
 #   1. draft  .task/contract.json
-cgel validate                     # VALIDATE PASS — TASK-1 digest sha256:...
-cgel summary                      # human summary + SUMMARY ... digest=... seal_mode=auto|human
-cgel seal TASK-1 --digest sha256:...   # user approves; freezes contract + governance bundle
-#   ... work happens inside scope.allowed ...
-#   ... the loop (cgel:loop skill) ...
-cgel iterate open --hypothesis "H-1: ..." --intended-change "..." --expected-checks unit-tests
-cgel verify unit-tests            # runs the registered command, records chained evidence
-cgel iterate decide ADVANCE       # hypothesis held — needs fresh passing evidence for --expected-checks
+cgel summary                      # validates + prints summary + SUMMARY ... digest=... seal_mode=auto|human
+#   2. ONE AskUserQuestion carrying the digest; the user taps Approve
+cgel seal TASK-1 --digest sha256:... \
+  && cgel iterate open --hypothesis "H-1: ..." --change "..." --expect unit-tests
+#   ... work happens inside scope.allowed (cgel:loop skill) ...
+cgel iterate decide ADVANCE --verify   # runs the expected checks fresh, then decides — one call
 #   or RETRY / REPLAN / ROLLBACK_ITERATION — guard + budgets enforced
+cgel verify unit-tests lint --required # any number of checks in one roundtrip
 cgel audit                        # AUDIT OK — evidence=N events=M chain=intact bundle=unchanged
 cgel status                       # STATUS ACTIVE task=TASK-1 ... evidence=N
 
@@ -223,17 +301,30 @@ cgel status                       # STATUS ACTIVE task=TASK-1 ... evidence=N
 cgel rules                        # semantic rules parsed from docs/standards/
 #   run the read-only cgel:verifier subagent, save its JSON to .task/findings.json
 cgel semantic record              # SEMANTIC OK — N finding(s), 0 blocking
-cgel close --as PASS              # evidence + semantic validators; exports attestation
+cgel close --as PASS              # evidence + semantic validators; exports attestation; frees the draft
 cgel close --as ESCALATE --reason "needs user verification"   # the honest fallback
 
-# user-only interventions
-cgel unblock --add-iterations 2   # lift a budget block (USER decision)
+# user-approved interventions (the model asks, the gate verifies the answer)
+cgel unblock --add-iterations 2   # lift a budget block, or widen one early
+
+# parallel second task in the same repo
+cgel summary --contract .task/TASK-2.contract.json
+cgel seal TASK-2 --digest sha256:... --contract .task/TASK-2.contract.json
+cgel verify unit-tests --task TASK-2   # --task on every verb while two are open
 ```
 
-Kill switches: `CGEL_GATE=off`, `CGEL_GIT_GUARD=off` (env), or
-`.cgel/config.json` `{"gate": "off"}` / `{"git_guard": "off"}`. Per-command
+Kill switches: `CGEL_GATE=off`, `CGEL_GIT_GUARD=off`,
+`CGEL_APPROVAL_GATE=off` (env), or `.cgel/config.json` `{"gate": "off"}` /
+`{"git_guard": "off"}` / `{"approval_gate": "off"}`. Per-command
 destructive-git override typed by the user: `CGEL_GIT=allow git ...` — which
 also permits an attributed commit, if the user genuinely wants one.
+
+Governance-bundle churn: file digests are cached by mtime+size in the state
+store, and `.cgel/config.json` `{"bundle_exclude": ["glob", ...]}` drops
+churn-prone paths (a gitignored repo-local skill, say) from the sealed
+measure — they stay edit-gated, but changing them no longer voids open
+seals. The config file itself is always digested, so an exclusion cannot
+arrive invisibly mid-task.
 
 The no-AI-attribution rule (injected instruction + commit/PR block) is on by
 default in every CGEL project, task or not. Turn off just that rule with

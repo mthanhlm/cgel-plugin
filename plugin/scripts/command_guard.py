@@ -5,6 +5,12 @@ Safety gate -> fails CLOSED: unreadable payload blocks the call (exit 2).
 This is a guardrail on the raw command string, not a sandbox; indirect
 mutations (scripts, interpreters) are out of reach on Profile A hosts.
 
+A destructive command runs if the transcript carries the user's recorded
+AskUserQuestion approval quoting the exact command (see approvals.py) —
+the approval both unblocks it and suppresses the permission prompt, so
+the user answers one readable question instead of retyping commands.
+The attribution rules have NO approval path: they are policy, not risk.
+
 Bypass, per command, typed by the USER: prefix `CGEL_GIT=allow `.
 Kill switches: env CGEL_GIT_GUARD=off, or .cgel/config.json
 {"git_guard": "off"}; attribution only: {"ai_attribution_guard": "off"}.
@@ -16,6 +22,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import approvals
 import cgel_common as C
 
 RULES = [
@@ -121,10 +128,25 @@ def main():
 
     for rule_id, pattern, reason in RULES:
         if pattern.search(command):
+            flat = approvals.collapse_ws(command)
+            found = approvals.find_approval(
+                payload.get("transcript_path"), [flat], repo_root
+            )
+            if found:
+                key, _ = found
+                approvals.consume(repo_root, key, "git:%s" % rule_id, [flat], command)
+                print(
+                    approvals.allow_json(
+                        "CGEL: user approved this %s command via question" % rule_id
+                    )
+                )
+                return 0
             print(
-                "CGEL guard [%s]: blocked — %s. If the user explicitly wants "
-                "this, they can rerun it prefixed with `CGEL_GIT=allow `."
-                % (rule_id, reason),
+                "CGEL guard [%s]: blocked — %s. If the user wants this, ask "
+                "them with the AskUserQuestion tool, quoting the exact "
+                "command in backticks, with options starting with 'Approve' "
+                "— then rerun it. They can instead rerun it themselves "
+                "prefixed with `CGEL_GIT=allow `." % (rule_id, reason),
                 file=sys.stderr,
             )
             return 2

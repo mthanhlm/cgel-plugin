@@ -316,7 +316,9 @@ class LoopTestCase(unittest.TestCase):
             env=self.env,
         )
         self.assertEqual(code, 0)
-        self.assertEqual(out.strip(), "")
+        # the standing rule is gone; other context (e.g. the registered
+        # checks line) may still be injected
+        self.assertNotIn("no AI attribution", out)
 
     def test_resume_preserves_evidence_chain(self):
         self.seal()

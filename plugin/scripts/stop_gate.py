@@ -31,33 +31,36 @@ def main():
     repo_root = C.find_repo_root(cwd)
     if not repo_root:
         return 0
-    task = C.load_state(repo_root)
-    if task["lifecycle"] != "ACTIVE":
-        return 0
-
-    tdir = C.task_dir(repo_root, task["task_id"])
-    pending = C.open_iteration(C.iteration_records(tdir))
-    if not pending:
-        return 0
 
     limit = C.read_config(repo_root).get("stop_continuation_limit", DEFAULT_LIMIT)
     if not isinstance(limit, int) or limit < 0:
         limit = DEFAULT_LIMIT
-    used = task["state"].get("stop_continuations", 0)
-    if used >= limit:
-        return 0  # bound reached: let the turn end, the state store remembers
 
-    C.update_state(repo_root, task["task_id"], stop_continuations=used + 1)
-    print(
-        "CGEL stop gate: task %s is ACTIVE and iteration %d has no decision. "
-        "Do not leave the loop dangling: record the outcome with "
-        "`cgel iterate decide RETRY|REPLAN|ROLLBACK_ITERATION`, then either "
-        "continue, close (`cgel close --as ...`), or tell the user why you "
-        "are stopping. (forced continuation %d/%d)"
-        % (task["task_id"], pending["iteration"], used + 1, limit),
-        file=sys.stderr,
-    )
-    return 2
+    for task in C.open_tasks(repo_root):
+        if task["lifecycle"] != "ACTIVE":
+            continue
+        tdir = C.task_dir(repo_root, task["task_id"])
+        pending = C.open_iteration(C.iteration_records(tdir))
+        if not pending:
+            continue
+        used = task["state"].get("stop_continuations", 0)
+        if used >= limit:
+            continue  # bound reached: let the turn end, the store remembers
+
+        C.update_state(repo_root, task["task_id"], stop_continuations=used + 1)
+        print(
+            "CGEL stop gate: task %s is ACTIVE and iteration %d has no "
+            "decision. Do not leave the loop dangling: record the outcome "
+            "with `cgel iterate decide ADVANCE|RETRY|REPLAN|"
+            "ROLLBACK_ITERATION --task %s`, then either continue, close "
+            "(`cgel close --as ...`), or tell the user why you are "
+            "stopping. (forced continuation %d/%d)"
+            % (task["task_id"], pending["iteration"], task["task_id"],
+               used + 1, limit),
+            file=sys.stderr,
+        )
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

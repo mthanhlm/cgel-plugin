@@ -173,6 +173,36 @@ def governance_capability_for(rel_path):
     return None
 
 
+def _glob_prefix(pattern):
+    pat = pattern.strip().replace(os.sep, "/")
+    while pat.startswith("./"):
+        pat = pat[2:]
+    cut = len(pat)
+    for wildcard in ("*", "?", "["):
+        idx = pat.find(wildcard)
+        if idx != -1:
+            cut = min(cut, idx)
+    return pat[:cut].rstrip("/")
+
+
+def scopes_overlap(a_patterns, b_patterns):
+    """Cheap containment heuristic: two allowed-scopes overlap when the
+    literal prefix of one pattern contains the other's. Advisory only — the
+    edit gate and the repo-wide diff digest stay authoritative; this exists
+    so sealing a second task over shared paths is a warned choice, not an
+    accident."""
+    for a in a_patterns or []:
+        prefix_a = _glob_prefix(a)
+        for b in b_patterns or []:
+            prefix_b = _glob_prefix(b)
+            shorter, longer = sorted((prefix_a, prefix_b), key=len)
+            if not shorter:
+                return True  # a bare '**' touches everything
+            if longer == shorter or longer.startswith(shorter + "/"):
+                return True
+    return False
+
+
 # ---------------------------------------------------------------- contract
 
 def normalize_contract(contract):
@@ -297,40 +327,76 @@ def validate_contract(contract):
 
 # ------------------------------------------------------------------- state
 
-def load_state(repo_root):
-    """Current task state from the runtime state store.
+def open_tasks(repo_root):
+    """Every task in the store whose lifecycle is SEALED/ACTIVE/BLOCKED,
+    oldest seal first.
 
-    Returns {"lifecycle": "NO_TASK"} or
-    {"lifecycle": "SEALED"|"ACTIVE"|"BLOCKED", "task_id", "sealed", "state"}.
+    There is no CURRENT pointer any more — several tasks may be open at once
+    (D-39) and state.json is the single authority. Tasks left open by older
+    versions become visible here instead of being masked by a stale pointer;
+    `cgel status` lists them and `cgel close --task <id>` retires them.
     """
     store = repo_state_dir(repo_root)
-    current_path = os.path.join(store, "CURRENT")
+    tasks = []
     try:
-        with open(current_path, encoding="utf-8") as fh:
-            task_id = fh.read().strip()
-    except FileNotFoundError:
-        return {"lifecycle": "NO_TASK"}
-    except Exception as exc:
-        _debug("load_state:CURRENT", exc)
-        return {"lifecycle": "NO_TASK"}
-    if not task_id:
-        return {"lifecycle": "NO_TASK"}
-    task_dir = os.path.join(store, task_id)
-    try:
-        state = load_json(os.path.join(task_dir, "state.json"))
-        sealed = load_json(os.path.join(task_dir, "sealed_task.json"))
-    except Exception as exc:
-        _debug("load_state:task", exc)
-        return {"lifecycle": "NO_TASK"}
-    lifecycle = state.get("lifecycle")
-    if lifecycle not in TASK_LIFECYCLES:
-        return {"lifecycle": "NO_TASK"}
-    return {
-        "lifecycle": lifecycle,
-        "task_id": task_id,
-        "sealed": sealed,
-        "state": state,
-    }
+        names = sorted(os.listdir(store))
+    except OSError:
+        return tasks
+    for name in names:
+        tdir = os.path.join(store, name)
+        if not os.path.isdir(tdir):
+            continue
+        try:
+            state = load_json(os.path.join(tdir, "state.json"))
+            sealed = load_json(os.path.join(tdir, "sealed_task.json"))
+        except Exception as exc:
+            _debug("open_tasks:%s" % name, exc)
+            continue
+        if state.get("lifecycle") not in TASK_LIFECYCLES:
+            continue
+        if state.get("task_id") and state["task_id"] != name:
+            continue  # rotated archive dir — not addressable
+        tasks.append(
+            {
+                "lifecycle": state["lifecycle"],
+                "task_id": state.get("task_id") or name,
+                "sealed": sealed,
+                "state": state,
+            }
+        )
+    tasks.sort(key=lambda t: t["state"].get("sealed_at") or "")
+    return tasks
+
+
+def load_task(repo_root, task_id):
+    for task in open_tasks(repo_root):
+        if task["task_id"] == task_id:
+            return task
+    return None
+
+
+def resolve_task(repo_root, task_id=None):
+    """(task, error). An explicit --task wins; else the sole open task.
+
+    With two or more tasks open every addressed verb must say which one —
+    the alternative is what the transcripts showed: one session deciding
+    another session's open iteration.
+    """
+    tasks = open_tasks(repo_root)
+    if task_id:
+        for task in tasks:
+            if task["task_id"] == task_id:
+                return task, None
+        open_ids = ", ".join(t["task_id"] for t in tasks) or "none"
+        return None, "no open task '%s' (open: %s)" % (task_id, open_ids)
+    if not tasks:
+        return None, "no sealed task"
+    if len(tasks) == 1:
+        return tasks[0], None
+    return None, "%d tasks are open (%s) — pass --task <id>" % (
+        len(tasks),
+        ", ".join(t["task_id"] for t in tasks),
+    )
 
 
 def task_dir(repo_root, task_id):
@@ -406,14 +472,57 @@ def _iter_bundle_files(repo_root):
 
 
 def governance_bundle(repo_root):
-    """Digest every gate-protected file: the sealed measure (contract §15.5)."""
-    members = []
+    """Digest every gate-protected file: the sealed measure (contract §15.5).
+
+    File digests are cached by (mtime_ns, size) in the runtime state store —
+    same principal as everything else there, so the cache concedes nothing
+    Profile A had not already conceded, and it turns the per-verify bundle
+    walk from hash-everything into stat-everything.
+
+    Config `bundle_exclude` globs drop churn-prone paths from the measure
+    (the recurring case: a gitignored repo-local skill whose every edit
+    voided open seals). Excluded files stay edit-gated as governance paths;
+    changing them just no longer moves the bundle digest. The config file
+    itself is always digested, so an exclusion cannot be added invisibly
+    mid-task."""
+    exclude = read_config(repo_root).get("bundle_exclude") or []
+    cache_path = os.path.join(repo_state_dir(repo_root), "bundle_cache.json")
+    try:
+        cache = load_json(cache_path)
+        if not isinstance(cache, dict):
+            cache = {}
+    except Exception:
+        cache = {}
+    members = {}
+    fresh = {}
+    rehashed = False
     for rel in sorted(set(_iter_bundle_files(repo_root))):
-        digest = sha256_file(os.path.join(repo_root, rel))
+        if exclude and rel != ".cgel/config.json" and path_matches(rel, exclude):
+            continue
+        full = os.path.join(repo_root, rel)
+        try:
+            info = os.stat(full)
+            key = "%d:%d" % (info.st_mtime_ns, info.st_size)
+        except OSError:
+            key = None
+        cached = cache.get(rel)
+        if key and isinstance(cached, dict) and cached.get("key") == key:
+            digest = cached.get("digest")
+        else:
+            digest = sha256_file(full)
+            rehashed = True
         if digest:
-            members.append({"path": rel, "digest": digest})
-    bundle_digest = sha256_bytes(canonical_json(members).encode("utf-8"))
-    return {"digest": bundle_digest, "members": members}
+            members[rel] = digest
+            if key:
+                fresh[rel] = {"key": key, "digest": digest}
+    if rehashed or set(fresh) != set(cache):
+        try:
+            atomic_write_json(cache_path, fresh)
+        except Exception as exc:
+            _debug("bundle:cache", exc)
+    member_list = [{"path": rel, "digest": members[rel]} for rel in sorted(members)]
+    bundle_digest = sha256_bytes(canonical_json(member_list).encode("utf-8"))
+    return {"digest": bundle_digest, "members": member_list}
 
 
 def bundle_diff(sealed_members, current_members):
@@ -442,11 +551,18 @@ def _git(repo_root, *args):
     )
 
 
+MAX_SNAPSHOT_ENTRIES = 400
+
+
 def workspace_snapshot(repo_root):
     """base_revision + content digest of every path dirty vs HEAD.
 
     Evidence bound to this digest goes stale on ANY workspace change,
     including a commit (HEAD moves) — re-verify after committing.
+
+    Per-path digests ride along as `entries` (capped) so a check that
+    declares `watch` globs can tell an irrelevant change from one that
+    touches what it measures. The diff_digest algorithm is unchanged.
     """
     try:
         head_proc = _git(repo_root, "rev-parse", "HEAD")
@@ -458,6 +574,7 @@ def workspace_snapshot(repo_root):
         return {"base_revision": "no-git", "diff_digest": "no-git"}
     head = head_proc.stdout.strip() if head_proc.returncode == 0 else "no-head"
     entries = []
+    detail = {}
     for line in status_proc.stdout.splitlines():
         if len(line) < 4:
             continue
@@ -469,14 +586,33 @@ def workspace_snapshot(repo_root):
             continue
         full = os.path.join(repo_root, path)
         if os.path.isfile(full):
-            entries.append("%s:%s" % (path, sha256_file(full) or "unreadable"))
+            digest = sha256_file(full) or "unreadable"
         else:
-            entries.append("%s:deleted" % path)
+            digest = "deleted"
+        entries.append("%s:%s" % (path, digest))
+        detail[path] = digest
     canonical = head + "\n" + "\n".join(sorted(entries))
-    return {
+    snapshot = {
         "base_revision": head,
         "diff_digest": sha256_bytes(canonical.encode("utf-8")),
     }
+    if len(detail) <= MAX_SNAPSHOT_ENTRIES:
+        snapshot["entries"] = detail
+    return snapshot
+
+
+def snapshot_changed_paths(old, new):
+    """Paths whose content differs between two snapshots, or None when that
+    is unknowable — a side lacks per-path entries, or HEAD moved (a commit
+    re-bases every path, so everything may have changed)."""
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return None
+    if old.get("base_revision") != new.get("base_revision"):
+        return None
+    a, b = old.get("entries"), new.get("entries")
+    if a is None or b is None:
+        return None
+    return sorted(p for p in set(a) | set(b) if a.get(p) != b.get(p))
 
 
 # ---------------------------------------------------------------- registry
@@ -598,6 +734,16 @@ def count_edit_events(task_dir_path):
     return sum(1 for e in events if e.get("type") == "edit")
 
 
+def edit_event_paths(task_dir_path):
+    """Paths of every recorded edit event, in order — so freshness checks can
+    ask WHICH files changed after a record, not just how many."""
+    return [
+        e.get("path")
+        for e in read_jsonl(os.path.join(task_dir_path, EVENTS_FILE))
+        if e.get("type") == "edit"
+    ]
+
+
 # -------------------------------------------------------------- iterations
 
 def iteration_records(task_dir_path):
@@ -619,14 +765,25 @@ def open_iteration(records):
 
 
 def latest_failure_signature(task_dir_path):
-    """Machine-observed signature of the most recent failing evidence."""
+    """Machine-observed signature of the newest failing evidence that no
+    later pass of the same check has superseded.
+
+    A check that failed and then passed is green: keeping its old failure
+    alive tripped the default-same guard on finished work twice in real use,
+    once forcing an unwanted ROLLBACK label and once an ESCALATE close of
+    fully verified work plus a whole second contract."""
+    seen = set()
     for rec in reversed(read_jsonl(os.path.join(task_dir_path, EVIDENCE_FILE))):
         if rec.get("type") != "evidence":
             continue
+        check_id = (rec.get("check") or {}).get("id")
+        if check_id in seen:
+            continue
+        seen.add(check_id)
         result = rec.get("result") or {}
         if result.get("status") == "fail":
             return {
-                "check_id": (rec.get("check") or {}).get("id"),
+                "check_id": check_id,
                 "failure_kind": result.get("failure_kind"),
                 "failure_subject": result.get("failure_subject"),
                 "diagnostic_fingerprint": result.get("diagnostic_fingerprint"),

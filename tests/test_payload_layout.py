@@ -37,6 +37,18 @@ def marketplace():
         return json.load(fh)
 
 
+def payload_dirs():
+    """Top-level dirs Claude Code would read as a plugin: the manifest is what
+    makes one, so this finds payloads the marketplace forgot to publish."""
+    return {
+        name
+        for name in os.listdir(REPO_ROOT)
+        if os.path.isfile(
+            os.path.join(REPO_ROOT, name, ".claude-plugin", "plugin.json")
+        )
+    }
+
+
 class VacuousPassGuard(unittest.TestCase):
     def test_payload_dir_exists_and_is_populated(self):
         self.assertTrue(os.path.isdir(PLUGIN_ROOT))
@@ -71,6 +83,21 @@ class MarketplacePointsAtThePayload(unittest.TestCase):
     def test_marketplace_manifest_stays_at_the_repo_root(self):
         # Relative sources resolve against the dir holding .claude-plugin/.
         self.assertTrue(os.path.isfile(MARKETPLACE_PATH))
+
+    def test_every_payload_in_the_repo_is_published(self):
+        # An unpublished payload is dead weight that still costs review and
+        # rots unnoticed, since no install ever exercises it. Publish it or
+        # delete it; do not let it sit here half-built.
+        published = {
+            os.path.normpath(entry["source"])
+            for entry in marketplace()["plugins"]
+        }
+        self.assertEqual(
+            payload_dirs(),
+            published,
+            "the payloads in this repo are not the ones marketplace.json "
+            "publishes",
+        )
 
 
 class NonPayloadStaysOut(unittest.TestCase):

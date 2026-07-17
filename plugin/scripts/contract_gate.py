@@ -49,9 +49,6 @@ def main():
         C._debug("contract_gate:stdin", exc)
         return allow()
 
-    if os.environ.get("CGEL_GATE", "").lower() == "off":
-        return allow()
-
     tool_input = payload.get("tool_input") or {}
     file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not file_path:
@@ -62,7 +59,17 @@ def main():
     if not repo_root:
         return allow()  # not a CGEL-enabled project
 
-    if C.read_config(repo_root).get("gate") == "off":
+    # The kill-switch checks moved BELOW rooting so that a gate turned off is
+    # still a gate that RAN: `cgel status` can then say gate=off rather than
+    # gate=unobserved, which is the difference between "you turned it off" and
+    # "it was never wired up".
+    gate = "on"
+    if os.environ.get("CGEL_GATE", "").lower() == "off":
+        gate = "off"
+    elif C.read_config(repo_root).get("gate") == "off":
+        gate = "off"
+    C.note_gate_seen(repo_root, "PreToolUse:Edit", cwd, gate=gate, rate_limit=True)
+    if gate == "off":
         return allow()
 
     rel, in_repo = C.resolve_target(cwd, repo_root, file_path)

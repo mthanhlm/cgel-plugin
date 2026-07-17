@@ -668,13 +668,25 @@ def cmd_seal(args):
             "cgel: %d other task(s) open (%s) — pass --task on every verb."
             % (len(others), ", ".join(o["task_id"] for o in others))
         )
+    # This is the command that MINTS the workspace claim. If the binding is
+    # inert, every piece of evidence this task records will be permanently
+    # fresh, and the one moment to say so is before the user relies on it.
+    inert_code, inert_detail = C.git_state(root)
+    if inert_code:
+        details.append(
+            "cgel: WARNING — the workspace binding is inert here (%s). "
+            "Evidence recorded under this seal cannot go stale: nothing can "
+            "detect that the code changed after a check passed. The chain and "
+            "the scope gate still work; freshness does not." % inert_detail
+        )
     return ok(
-        "SEAL OK — %s digest=%s governance=%s%s"
+        "SEAL OK — %s digest=%s governance=%s%s%s"
         % (
             task_id,
             digest,
             bundle["digest"],
             " (reseal)" if reseal else "",
+            " — workspace binding inert (%s)" % inert_code if inert_code else "",
         ),
         *details
     )
@@ -1050,16 +1062,48 @@ def cmd_audit(args):
             "anchor (expected when cgel runs outside Claude Code hooks)"
         )
 
+    # Evidence whose workspace binding was inert when it was recorded is
+    # evidence that can never go stale. The chain over it IS intact — that
+    # claim stands — but "bound to the code as it stands" is a different
+    # claim, and it is the one being qualified here. Counts pre-upgrade
+    # records too (no `degraded` key, diff_digest == the no-git constant).
+    inert_records = sum(
+        1
+        for r in evidence
+        if (r.get("workspace") or {}).get("degraded")
+        or (r.get("workspace") or {}).get("diff_digest") == "no-git"
+    )
+    code, detail = C.git_state(root)
+    if code:
+        warnings.append(
+            "the workspace binding is INERT here (%s) — evidence recorded now "
+            "cannot go stale, because there is no diff to compare against" % detail
+        )
+    if inert_records:
+        warnings.append(
+            "%d of %d evidence record(s) were recorded with an inert workspace "
+            "binding — nothing can mark them stale"
+            % (inert_records, len(evidence))
+        )
+    if code:
+        workspace = "inert(%s)" % code
+    elif inert_records:
+        workspace = "partially-inert"
+    else:
+        workspace = "bound"
+
     for warning in warnings:
         print("  warn: %s" % warning, file=sys.stderr)
     if problems:
         return fail("AUDIT FAIL — " + "; ".join(problems))
     return ok(
-        "AUDIT OK — evidence=%d events=%d chain=intact bundle=%s warnings=%d"
+        "AUDIT OK — evidence=%d events=%d chain=intact bundle=%s workspace=%s "
+        "warnings=%d"
         % (
             counts[C.EVIDENCE_FILE],
             counts[C.EVENTS_FILE],
             "unchanged" if sealed_bundle else "absent",
+            workspace,
             len(warnings),
         )
     )
@@ -1350,10 +1394,18 @@ def cmd_check_doctor(args):
             "cgel: an empty registry measures nothing; add checks with "
             "`cgel check add`.",
         )
-    vacuous, broken, unknown = [], [], []
+    vacuous, broken, unknown, malformed = [], [], [], []
     for check_id in sorted(checks):
         entry = checks[check_id]
         if not isinstance(entry, dict) or not entry.get("command"):
+            # Was `continue`d past silently while len(checks) still counted it
+            # as healthy: a registry entry with no command reported OK.
+            malformed.append(check_id)
+            print(
+                "  MALFORMED %s — no usable command in the registry entry"
+                % check_id,
+                file=sys.stderr,
+            )
             continue
         command = entry["command"]
         timeout = entry.get("timeout_seconds", 600)
@@ -1414,9 +1466,21 @@ def cmd_check_doctor(args):
                 "remove <id>`."
             )
         return fail("DOCTOR FAIL — %s" % "; ".join(parts), *details)
+    # A check doctor could not test is not a check doctor blessed. It used to
+    # ride as a parenthetical on an OK line, which reads as "fine, with a
+    # footnote" — and OK is exactly the word that must not appear over a
+    # control nobody ran.
+    untested = sorted(unknown + malformed)
+    if untested:
+        return fail(
+            "DOCTOR DEGRADED — %d of %d check(s) could not be tested here: %s"
+            % (len(untested), len(checks), ", ".join(untested)),
+            "cgel: doctor did not prove these are healthy and did not prove "
+            "they are broken — it could not run them. Treat their evidence as "
+            "unverified until you can.",
+        )
     return ok(
-        "DOCTOR OK — %d check(s) depend on the project%s"
-        % (len(checks), " (%d unknown)" % len(unknown) if unknown else "")
+        "DOCTOR OK — %d check(s) depend on the project" % len(checks)
     )
 
 
@@ -2140,6 +2204,54 @@ def cmd_unblock(args):
     )
 
 
+GATE_STALE_SECONDS = 6 * 3600
+
+
+def _gate_token(root, tasks):
+    """on | off | unobserved — is the gate this status line implies running?
+
+    Branch order is the whole design:
+
+    1. A live `gate: off` in config is a fact read from disk right now. It
+       needs no freshness.
+    2. Otherwise a beacon that is absent, older than 6h, or older than the
+       seal is `unobserved` REGARDLESS of what it recorded. A stale beacon
+       saying `off` would otherwise report `off` forever after one old
+       CGEL_GATE=off experiment — a false RED, and a false RED is how a
+       reader learns to ignore the token.
+    3. Only a fresh beacon may report on/off.
+    """
+    if C.read_config(root).get("gate") == "off":
+        return "off"
+    beacon, age = C.gate_seen(root)
+    if not beacon or age is None or age >= GATE_STALE_SECONDS:
+        return "unobserved"
+    sealed_at = max((t["state"].get("sealed_at") or "") for t in tasks) if tasks else ""
+    # Both come from utc_now(): always +00:00, so a string compare orders
+    # correctly even when microseconds are truncated ('+' 0x2B < '.' 0x2E).
+    if sealed_at and (beacon.get("at") or "") < sealed_at:
+        return "unobserved"
+    return "off" if beacon.get("gate") == "off" else "on"
+
+
+def _gate_details(token):
+    if token == "unobserved":
+        return [
+            "cgel: gate=unobserved — no CGEL hook has been observed in this "
+            "project recently, so the gate above may not be running at all. "
+            "A session opened above this project, or a plugin that is not "
+            "installed, looks exactly like this. Nothing here proves an edit "
+            "was gated.",
+        ]
+    if token == "off":
+        return [
+            "cgel: gate=off — the edit gate is disabled, so Edit/Write are "
+            "NOT gated in this project. The task state below is a record, "
+            "not a control.",
+        ]
+    return []
+
+
 def _status_line(root, task):
     tdir = C.task_dir(root, task["task_id"])
     evidence = [
@@ -2260,13 +2372,21 @@ def cmd_status(args):
                     "STATUS DRAFT task=%s (not sealed)" % contract["task"]["id"]
                 )
         return ok("STATUS NO_TASK")
+    # The token qualifies a SEALED claim, so it rides only on lines that make
+    # one. NO_TASK/DRAFT get nothing: two paragraphs of prose on the
+    # most-run command in the product is how a diagnostic gets ignored.
+    token = _gate_token(root, tasks)
+    details = _gate_details(token)
     if len(tasks) == 1:
-        return ok("STATUS " + _status_line(root, tasks[0]))
+        return ok(
+            "STATUS %s gate=%s" % (_status_line(root, tasks[0]), token), *details
+        )
     for task in tasks:
         print("  " + _status_line(root, task), file=sys.stderr)
     return ok(
-        "STATUS OPEN — %d task(s): %s (pass --task <id> on every verb)"
-        % (len(tasks), ", ".join(t["task_id"] for t in tasks))
+        "STATUS OPEN — %d task(s): %s (pass --task <id> on every verb) gate=%s"
+        % (len(tasks), ", ".join(t["task_id"] for t in tasks), token),
+        *details
     )
 
 

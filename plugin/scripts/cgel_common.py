@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 
 CONTRACT_REL_PATH = ".task/contract.json"
@@ -941,6 +942,90 @@ def _git(repo_root, *args):
 MAX_SNAPSHOT_ENTRIES = 400
 
 
+WORKSPACE_INERT = {
+    "git-missing": "git is not on PATH",
+    "no-git": "this project is not a git work tree",
+    "git-error": "git could not be run here",
+}
+
+
+def git_state(repo_root):
+    """(code, detail) — is the workspace binding live? code None means yes.
+
+    Deliberately `rev-parse --is-inside-work-tree`, NOT `rev-parse HEAD`: a
+    freshly initialized repo with no commits is a live work tree whose diff
+    digest still varies, so HEAD would call it dead when it is not.
+    """
+    try:
+        proc = _git(repo_root, "rev-parse", "--is-inside-work-tree")
+    except FileNotFoundError:
+        return "git-missing", WORKSPACE_INERT["git-missing"]
+    except OSError as exc:
+        _debug("git_state:os", exc)
+        return "git-error", WORKSPACE_INERT["git-error"]
+    except Exception as exc:  # subprocess.TimeoutExpired and friends
+        _debug("git_state", exc)
+        return "git-error", WORKSPACE_INERT["git-error"]
+    if proc.returncode != 0 or proc.stdout.strip() != "true":
+        return "no-git", WORKSPACE_INERT["no-git"]
+    return None, None
+
+
+def inert_reason(code):
+    return WORKSPACE_INERT.get(code, "the workspace binding is not live")
+
+
+BEACON_FILE = "gate_beacon.json"
+
+
+def note_gate_seen(repo_root, hook, cwd, gate="on", rate_limit=False):
+    """Record that a hook ran here. The gate's only liveness signal.
+
+    `cgel status` claims SEALED. Whether the gate is actually running is a
+    different fact, and one CGEL cannot ask the harness: a plugin that was
+    never installed, a session rooted above the project, a stale settings
+    file all look identical from inside. A hook that fires leaves this; a
+    gate that never fires leaves nothing, and absence is the report.
+
+    Diagnostics must never break a gate, so the whole body is best-effort.
+    """
+    try:
+        store = repo_state_dir(repo_root)
+        if not os.path.isdir(store):
+            return  # a beacon must not be the thing that mints the store
+        path = os.path.join(store, BEACON_FILE)
+        if rate_limit:
+            # Skip only when the beacon is fresh AND recorded the same gate
+            # state: a transition always writes, so flipping the kill switch
+            # surfaces on the next tool call rather than up to a minute later.
+            try:
+                age = time.time() - os.path.getmtime(path)
+                if age < 60:
+                    prior = load_json(path)
+                    if isinstance(prior, dict) and prior.get("gate") == gate:
+                        return
+            except (OSError, ValueError, TypeError):
+                pass
+        atomic_write_json(
+            path, {"hook": hook, "cwd": cwd, "gate": gate, "at": utc_now()}
+        )
+    except Exception as exc:  # noqa: BLE001 — never break a gate to log one
+        _debug("beacon:write", exc)
+
+
+def gate_seen(repo_root):
+    """(beacon, age_seconds) or (None, None). Age from mtime — no ISO parse."""
+    try:
+        path = os.path.join(repo_state_dir(repo_root), BEACON_FILE)
+        beacon = load_json(path)
+        if not isinstance(beacon, dict):
+            return None, None
+        return beacon, time.time() - os.path.getmtime(path)
+    except Exception as exc:  # noqa: BLE001
+        _debug("beacon:read", exc)
+        return None, None
+
+
 def workspace_snapshot(repo_root):
     """base_revision + content digest of every path dirty vs HEAD.
 
@@ -951,14 +1036,30 @@ def workspace_snapshot(repo_root):
     declares `watch` globs can tell an irrelevant change from one that
     touches what it measures. The diff_digest algorithm is unchanged.
     """
+    # The "no-git" constants stay byte-identical: _evidence_problem compares
+    # diff_digest for EQUALITY, so changing them would silently invalidate
+    # every in-flight seal. What was missing is that this digest equals itself
+    # forever — the workspace binding is inert and nothing said so, so every
+    # surface printed green over a control that was not running. `degraded`
+    # is additive and carries the reason out to the surfaces.
     try:
         head_proc = _git(repo_root, "rev-parse", "HEAD")
         status_proc = _git(repo_root, "status", "--porcelain", "--untracked-files=all")
     except Exception as exc:
         _debug("workspace_snapshot:git", exc)
-        return {"base_revision": "no-git", "diff_digest": "no-git"}
+        code, _ = git_state(repo_root)
+        return {
+            "base_revision": "no-git",
+            "diff_digest": "no-git",
+            "degraded": code or "git-error",
+        }
     if status_proc.returncode != 0:
-        return {"base_revision": "no-git", "diff_digest": "no-git"}
+        code, _ = git_state(repo_root)
+        return {
+            "base_revision": "no-git",
+            "diff_digest": "no-git",
+            "degraded": code or "no-git",
+        }
     head = head_proc.stdout.strip() if head_proc.returncode == 0 else "no-head"
     entries = []
     detail = {}

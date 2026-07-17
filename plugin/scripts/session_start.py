@@ -272,6 +272,21 @@ def main():
             emit(monorepo_notice(below))
         return 0
 
+    # No rate limit: this fires once per session even when the session does
+    # nothing else, so a session that never rooted here is detectable by the
+    # beacon's ABSENCE from the very first `cgel status`.
+    C.note_gate_seen(
+        repo_root,
+        "SessionStart",
+        cwd,
+        gate="off"
+        if (
+            os.environ.get("CGEL_GATE", "").lower() == "off"
+            or C.read_config(repo_root).get("gate") == "off"
+        )
+        else "on",
+    )
+
     sections = []
     # First: a model that cannot run `cgel` cannot do anything else here, and
     # it must learn that from us rather than from `command not found`. Below

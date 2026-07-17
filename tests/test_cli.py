@@ -16,6 +16,7 @@ CONTRACT = {
         {"id": "AC-1", "description": "endpoint returns 201", "required_checks": ["unit-tests"]}
     ],
     "scope": {"allowed": ["src/**"]},
+    "risk": {"level": "low", "reasons": ["fixture: a new endpoint behind a test"]},
 }
 
 
@@ -63,17 +64,224 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("VALIDATE PASS", decision_line(out))
         self.assertIn("sha256:", decision_line(out))
 
-    def test_summary_shows_seal_mode(self):
+    # NOTE: test_summary_shows_seal_mode was DELETED, not updated. It asserted
+    # `seal_mode=auto|human` on the decision line — a label with five write
+    # sites and no branch anywhere in the codebase. Its premise was that the
+    # label distinguishes something, which is precisely the defect; keeping
+    # the name and adjusting the string would have preserved that premise.
+    # What it usefully covered — that the summary discloses the scope and the
+    # capabilities the user is about to approve — is a real property, so it
+    # gets an honest test of its own below.
+
+    def test_summary_discloses_what_the_user_is_approving(self):
         self.write_contract(CONTRACT)
         code, out, err = self.cli("summary")
         self.assertEqual(code, 0)
-        self.assertIn("seal_mode=auto", decision_line(out))
         self.assertIn("Allowed scope:", err)
+        self.assertIn("Protected capabilities: none", err)
         with_caps = json.loads(json.dumps(CONTRACT))
         with_caps["protected_capabilities"] = ["external-write"]
         self.write_contract(with_caps)
-        _, out, _ = self.cli("summary")
-        self.assertIn("seal_mode=human", decision_line(out))
+        _, _, err = self.cli("summary")
+        self.assertIn("external-write", err)
+
+    # --------------------------------------------- the seal screen is true
+    #
+    # `risk.setdefault("level", "low")` meant the level nobody typed was the
+    # level at which nothing grades the work: no challenger, no built-in
+    # rules, no verifier. cmd_summary printed "Risk: low" and never said so,
+    # so the user approved a digest without being told the production bar was
+    # off. These pin the two halves: the level is a claim that must be
+    # argued, and the machine's verdict is on the screen where consent
+    # happens.
+
+    def _no_risk(self):
+        c = json.loads(json.dumps(CONTRACT))
+        del c["risk"]
+        return c
+
+    def test_a_contract_with_no_risk_is_rejected(self):
+        self.write_contract(self._no_risk())
+        code, out, err = self.cli("validate")
+        self.assertEqual(code, 1)
+        self.assertIn("VALIDATE FAIL", decision_line(out))
+        self.assertIn("risk", err)
+        self.assertIn("no default", err)
+
+    def test_a_risk_level_with_no_argument_is_rejected(self):
+        # A level with no reasons is a default wearing a claim's clothes.
+        c = json.loads(json.dumps(CONTRACT))
+        c["risk"] = {"level": "low"}
+        self.write_contract(c)
+        code, out, err = self.cli("validate")
+        self.assertEqual(code, 1)
+        self.assertIn("risk.reasons", err)
+
+    def test_an_unknown_risk_level_is_rejected(self):
+        c = json.loads(json.dumps(CONTRACT))
+        c["risk"] = {"level": "trivial", "reasons": ["nice try"]}
+        self.write_contract(c)
+        code, _, err = self.cli("validate")
+        self.assertEqual(code, 1)
+        self.assertIn("risk.level", err)
+
+    def test_seal_refuses_a_contract_with_no_risk_claim(self):
+        # Not only validate: the one irreversible command must refuse too.
+        self.write_contract(self._no_risk())
+        code, out, _ = self.cli("seal", "TASK-C1", "--digest", "sha256:" + "0" * 64)
+        self.assertEqual(code, 1)
+        self.assertIn("DENIED", decision_line(out))
+
+    def test_summary_says_when_nothing_will_grade_the_work(self):
+        # The sentence that never existed. An honest `low` still seals — the
+        # user is just told what it costs.
+        self.write_contract(CONTRACT)
+        code, out, err = self.cli("summary")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Semantic verification: NOT REQUIRED", err)
+        self.assertIn("no rule will judge this change", err)
+        self.assertIn("semantic=none", decision_line(out))
+
+    def test_summary_names_the_rules_that_will_judge_the_work(self):
+        c = json.loads(json.dumps(CONTRACT))
+        c["risk"] = {"level": "high", "reasons": ["rewrites the auth path"]}
+        self.write_contract(c)
+        code, out, err = self.cli("summary")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Semantic verification: REQUIRED", err)
+        self.assertIn("a blocking finding stops PASS", err)
+        self.assertIn("semantic=required", decision_line(out))
+
+    def test_the_summary_verdict_matches_what_the_seal_freezes(self):
+        # The screen and the seal read the same function. If they could
+        # disagree, the disclosure would be decorative.
+        c = json.loads(json.dumps(CONTRACT))
+        c["risk"] = {"level": "high", "reasons": ["rewrites the auth path"]}
+        self.write_contract(c)
+        code, out, err = self.cli("summary")
+        self.assertIn("semantic=required", decision_line(out))
+        digest = decision_line(out).split("digest=")[1].split()[0]
+        self.cli("seal", "TASK-C1", "--digest", digest)
+        store = os.path.join(self.state, os.listdir(self.state)[0], "TASK-C1")
+        with open(os.path.join(store, "sealed_task.json")) as fh:
+            sealed = json.load(fh)
+        self.assertTrue(sealed["semantic_verification"]["required"])
+
+    def test_a_protected_capability_floors_the_risk_claim(self):
+        # The graded party does not get to rate a governance-reaching task
+        # low. The floor is narrow: two structural facts, no guesses.
+        c = json.loads(json.dumps(CONTRACT))
+        c["protected_capabilities"] = ["modify-hook-policy"]
+        c["risk"] = {"level": "low", "reasons": ["just a small tweak, honest"]}
+        self.write_contract(c)
+        code, out, err = self.cli("summary")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Risk: high (raised from 'low'", err)
+        self.assertIn("floored to high", err)
+        self.assertIn("semantic=required", decision_line(out))
+
+    def test_a_governance_reaching_scope_floors_the_risk_claim(self):
+        c = json.loads(json.dumps(CONTRACT))
+        c["scope"]["allowed"] = ["src/**", ".cgel/**"]
+        c["risk"] = {"level": "low", "reasons": ["tiny registry edit"]}
+        self.write_contract(c)
+        code, _, err = self.cli("summary")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Risk: high (raised from 'low'", err)
+        self.assertIn(".cgel/**", err)
+
+    def test_an_honest_high_is_not_reported_as_floored(self):
+        c = json.loads(json.dumps(CONTRACT))
+        c["protected_capabilities"] = ["modify-hook-policy"]
+        c["risk"] = {"level": "high", "reasons": ["edits the hook policy"]}
+        self.write_contract(c)
+        _, _, err = self.cli("summary")
+        self.assertIn("Risk: high", err)
+        self.assertNotIn("raised from", err)
+
+    def test_the_floor_does_not_move_the_digest_between_screen_and_seal(self):
+        # normalize runs at validate, summary AND seal. If the floor appended
+        # its reason each time, the digest the user read would not be the
+        # digest they sealed.
+        c = json.loads(json.dumps(CONTRACT))
+        c["protected_capabilities"] = ["modify-hook-policy"]
+        c["risk"] = {"level": "low", "reasons": ["small"]}
+        self.write_contract(c)
+        first = self.summary_digest()
+        self.assertEqual(self.summary_digest(), first)
+        code, out, _ = self.cli("validate")
+        self.assertIn(first, decision_line(out))
+        code, out, err = self.cli("seal", "TASK-C1", "--digest", first)
+        self.assertEqual(code, 0, out + err)
+
+    # ----------------------------------- deleted mechanisms stay deleted
+    #
+    # Each of these was a control the user was shown that nothing read. The
+    # corrosive part was never the dead code — it was that a user could act
+    # on it. Rejecting the retired shape out loud beats accepting it.
+
+    def test_unblock_reason_is_rejected_rather_than_silently_dropped(self):
+        # `--reason` was parsed here and read by nothing: the user typed a
+        # justification into a flag that went nowhere, and an approval
+        # question quoting it approved a string with no effect.
+        self.write_contract(CONTRACT)
+        self.cli("seal", "TASK-C1", "--digest", self.summary_digest())
+        code, _, err = self.cli("unblock", "--add-iterations", "1", "--reason", "x")
+        self.assertNotEqual(code, 0)
+        self.assertIn("unrecognized arguments", err)
+
+    def test_close_reason_still_works(self):
+        # The deletion must not take the real one with it.
+        self.write_contract(CONTRACT)
+        self.cli("seal", "TASK-C1", "--digest", self.summary_digest())
+        code, out, err = self.cli(
+            "close", "--as", "ABORT", "--reason", "not needed after all"
+        )
+        self.assertEqual(code, 0, out + err)
+
+    def test_a_retired_exceptions_key_warns_instead_of_pretending(self):
+        # It was in the schema, printed at the seal ceremony, and named by a
+        # blocking rule as the only legitimate way to accept debt — and read
+        # by nothing. A contract still carrying it was written against a
+        # promise that never held; say so.
+        c = json.loads(json.dumps(CONTRACT))
+        c["exceptions"] = [{"target": "SEC-1", "approved_by": "u", "reason": "r"}]
+        self.write_contract(c)
+        code, out, err = self.cli("summary")
+        self.assertEqual(code, 0, err)
+        self.assertIn("`exceptions` is retired", err)
+        self.assertIn("never read by anything", err)
+
+    def test_a_denied_attestation_policy_writes_no_artifact(self):
+        # Caught by the verifier: the policy check was bolted on AFTER the
+        # write, so ATTEST DENIED still left attestation.json on disk. A
+        # refusal that leaves the artifact behind is not a refusal.
+        self.write_contract(CONTRACT)
+        self.cli("seal", "TASK-C1", "--digest", self.summary_digest())
+        with open(
+            os.path.join(self.repo, ".cgel", "config.json"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write('{"attestation": {"persistence": "repository"}}')
+        code, _, _ = self.cli("attest")
+        self.assertEqual(code, 1)
+        store = os.path.join(self.state, os.listdir(self.state)[0], "TASK-C1")
+        self.assertFalse(
+            os.path.exists(os.path.join(store, "attestation", "attestation.json"))
+        )
+
+    def test_an_unimplemented_attestation_policy_is_rejected(self):
+        # The key advertised four values and honoured one, then printed a
+        # footnote saying so. Reject the three that do not exist.
+        self.write_contract(CONTRACT)
+        self.cli("seal", "TASK-C1", "--digest", self.summary_digest())
+        with open(
+            os.path.join(self.repo, ".cgel", "config.json"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write('{"attestation": {"persistence": "repository"}}')
+        code, out, err = self.cli("attest")
+        self.assertEqual(code, 1)
+        self.assertIn("ATTEST DENIED", decision_line(out))
+        self.assertIn("only implemented policy is `local`", err)
 
     def test_seal_digest_mismatch_denied(self):
         self.write_contract(CONTRACT)

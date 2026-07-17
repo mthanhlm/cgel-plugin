@@ -16,6 +16,7 @@ CONTRACT = {
         {"id": "AC-1", "description": "check passes", "required_checks": ["ok-check"]}
     ],
     "scope": {"allowed": ["src/**"]},
+    "risk": {"level": "low", "reasons": ["fixture: exercises the iteration loop"]},
     "budgets": {"max_iterations": 3, "max_replans": 1},
 }
 

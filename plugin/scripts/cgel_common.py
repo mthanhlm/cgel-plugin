@@ -205,20 +205,70 @@ def scopes_overlap(a_patterns, b_patterns):
 
 # ---------------------------------------------------------------- contract
 
+RISK_LEVELS = ("low", "medium", "high")
+
+# Reaching any of these means the task can change how it is judged, or how
+# the gate behaves. That is a structural fact about the scope, not an opinion
+# about the work, so the graded party does not get to rate it lower.
+_GOVERNANCE_ROOTS = tuple(pattern for pattern, _cap in GOVERNANCE_PATH_CAPS)
+
+
+def _floor_risk(c):
+    """Raise risk.level to `high` for the two cases the author cannot argue.
+
+    Deliberately narrow and deliberately dumb. Both triggers are literally
+    true — the task really can rewrite its own measure — and the escape is to
+    tighten the scope, not to argue. A floor that fires on a guess ("more
+    than N files") is one the reader learns to ignore, and a warning nobody
+    reads is worse than no warning (D-36)."""
+    risk = c["risk"]
+    reasons = []
+    if c.get("protected_capabilities"):
+        reasons.append(
+            "floored to high: the contract requests protected capabilities (%s)"
+            % ", ".join(c["protected_capabilities"])
+        )
+    reaching = [
+        pattern
+        for pattern in c["scope"].get("allowed") or []
+        if scopes_overlap([pattern], list(_GOVERNANCE_ROOTS))
+    ]
+    if reaching:
+        reasons.append(
+            "floored to high: scope.allowed reaches governance paths (%s)"
+            % ", ".join(sorted(reaching))
+        )
+    if not reasons:
+        return
+    risk["level"] = "high"
+    # Idempotent: normalize runs at validate, summary AND seal, and each must
+    # digest the same artifact — appending the reason twice would move the
+    # digest between the screen the user read and the seal they approved.
+    for reason in reasons:
+        if reason not in risk["reasons"]:
+            risk["reasons"].append(reason)
+
+
 def normalize_contract(contract):
     """Apply defaults so summary/seal digest the exact same artifact."""
     c = json.loads(json.dumps(contract))  # deep copy
     c.setdefault("protected_capabilities", [])
-    c.setdefault("exceptions", [])
     budgets = c.setdefault("budgets", {})
     budgets.setdefault("max_iterations", 5)
     budgets.setdefault("max_replans", 2)
+    # risk.level has NO default. It used to default to "low", which is the
+    # level at which _semantic_requirement returns required=False — so the
+    # challenger, the built-in rules and the opus verifier never ran on a
+    # normal task, and cmd_summary never told the user that. The whole
+    # semantic layer was gated behind a setdefault nobody typed. A risk level
+    # is a claim the author makes and argues; validate_contract rejects a
+    # contract that does not make one.
     risk = c.setdefault("risk", {})
-    risk.setdefault("level", "low")
     risk.setdefault("reasons", [])
     scope = c.setdefault("scope", {})
     scope.setdefault("allowed", [])
     scope.setdefault("forbidden", [])
+    _floor_risk(c)
     scope.setdefault("notes", [])
     return c
 
@@ -234,7 +284,6 @@ def contract_digest(contract):
 
 
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_RISK_LEVELS = ("low", "medium", "high")
 
 
 def validate_contract(contract):
@@ -305,6 +354,36 @@ def validate_contract(contract):
     if not isinstance(caps, list) or not all(isinstance(x, str) for x in caps):
         err("protected_capabilities: list of strings")
 
+    # The risk level decides whether anything grades this work: at `low`,
+    # semantic verification is not required, so the challenger, the built-in
+    # rules and the verifier all stand down. It used to default to `low`
+    # silently. Make it a claim the author states and argues — at EVERY level,
+    # so it cannot be dodged by claiming `medium` to skip the argument.
+    risk = contract.get("risk")
+    if not isinstance(risk, dict):
+        err(
+            'risk: required object, e.g. {"level": "medium", "reasons": '
+            '["why this level is honest"]} — there is no default; the level '
+            "decides whether the work is graded at all"
+        )
+    else:
+        level = risk.get("level")
+        if level not in RISK_LEVELS:
+            err(
+                "risk.level: required, one of %s — say which and argue it in "
+                "risk.reasons" % ", ".join(RISK_LEVELS)
+            )
+        reasons = risk.get("reasons")
+        if (
+            not isinstance(reasons, list)
+            or not reasons
+            or not all(isinstance(x, str) and x.strip() for x in reasons)
+        ):
+            err(
+                "risk.reasons: required non-empty list of strings — a level "
+                "with no argument is a default wearing a claim's clothes"
+            )
+
     budgets = contract.get("budgets", {})
     if not isinstance(budgets, dict):
         err("budgets: must be an object")
@@ -315,12 +394,6 @@ def validate_contract(contract):
             err("budgets.max_iterations: integer >= 1")
         if not isinstance(max_replans, int) or max_replans < 0:
             err("budgets.max_replans: integer >= 0")
-
-    risk = contract.get("risk", {})
-    if not isinstance(risk, dict):
-        err("risk: must be an object")
-    elif risk.get("level", "low") not in _RISK_LEVELS:
-        err("risk.level: one of %s" % (_RISK_LEVELS,))
 
     review = contract.get("intent_review")
     if review is not None:

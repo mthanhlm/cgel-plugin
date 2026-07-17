@@ -94,8 +94,15 @@ check can measure should plan for `close --as ESCALATE` from the start.
    > Goal: fix the login redirect loop
    > Files: src/auth/** (about 3 files)
    > Must pass: unit-tests, lint
-   > Risk: low — no API change
+   > Risk: medium — it is the auth path; a review will judge it
    > Seal digest sha256:ab12cd34ef56…
+
+   Read the risk back honestly. `Risk: medium` on an auth fix is the
+   claim you should be making; `low` here would be the reflex the old
+   default trained, and it would mean no rule judges the change. If you
+   DO claim `low`, the summary prints "no rule will judge this change" —
+   put that sentence in the question, because it is what the user is
+   agreeing to.
 
    Options: "Approve" / "Adjust" / "Cancel". First option label must start
    with "Approve" — the approval gate matches it.
@@ -105,9 +112,10 @@ check can measure should plan for `close --as ESCALATE` from the start.
    The recorded answer is the approval — the gate verifies it from the
    transcript and lets the seal through with no further prompt. Do NOT also
    ask for a chat "approve" on top: one gate, not two.
-   - `seal_mode=human` (protected capabilities present): the question MUST
+   - If `Protected capabilities:` is anything but `none`, the question MUST
      name each capability in plain words ("this task may edit the hook
-     config") — never smuggle a protected seal past them.
+     config") — never smuggle a protected seal past them. Read it off the
+     summary; it is your duty, not a flag the CLI enforces.
    - If seal is denied for dirty files, STOP and ask (same question form,
      listing the files); only reseal with `--allow-dirty` after their
      explicit confirmation.
@@ -142,11 +150,26 @@ If a needed check is missing from `.cgel/registry.json`, that is a
 governance change: add it before sealing, or via a dedicated
 `modify-verification-registry` task — never mid-task.
 
-The production bar is always on: the built-in blocking rules
-(`CGEL-IMPACT-1` all impacted code updated, `CGEL-DEBT-1` no new debt,
-`CGEL-COMMENT-1` comment quality, `CGEL-SECRET-1` no hardcoded secrets)
-make semantic verification mandatory at medium+ risk, and the verifier
-will grep, not guess. Write code that survives that review the first time.
+The production bar: two built-in rules BLOCK (`CGEL-IMPACT-1` all impacted
+code updated, `CGEL-SECRET-1` no hardcoded secrets) and two ADVISE
+(`CGEL-DEBT-1` no new debt, `CGEL-COMMENT-1` comment quality). The blocking
+pair make semantic verification required at medium+ risk, and the verifier
+will grep, not guess. Write code that survives that review the first time —
+including the advisory findings, which reach the user even when they cannot
+stop a PASS.
+
+Whether ANY of it runs depends on `risk.level`, and there is no default.
+State it and argue it in `risk.reasons`:
+  - `low` — nothing will judge this change but the registered checks. Claim
+    it only when that is genuinely right (a typo, a comment, a test-only
+    tweak), and say why.
+  - `medium` — the blocking rules run. The honest default for real work.
+  - `high` — the verifier runs for the level itself, not only the rules.
+`cgel summary` prints the verdict; read it back to the user in the approval
+question when it says NOT REQUIRED, because that sentence is the cost of the
+claim you made. Two cases floor to `high` whatever you claim: requesting
+`protected_capabilities`, or a `scope.allowed` that reaches a governance
+path. Do not argue with the floor — tighten the scope.
 
 ## 7. Two tasks at once
 

@@ -14,7 +14,7 @@
 
 **3. The approval ceremony bound to the exact contract digest:** AGREED. Approving a command is not the same as approving an artifact; a normalized summary + `cgel seal <task> --digest sha256:...` turns the permission-ask boundary into genuine informed consent. Accepted as a mandatory ceremony for every human seal.
 
-**4. Persistence policy:** AGREED. Raw runtime state is not committed; attestations are not committed by default; project opt-in `local | ci-artifact | pr-comment | repository`, and `repository` is never the default.
+**4. Persistence policy:** AGREED. Raw runtime state is not committed; attestations are not committed by default; project opt-in `local | ci-artifact | pr-comment | repository`, and `repository` is never the default. **[Superseded by D-46: only `local` was ever implemented, and the other three are now rejected rather than accepted with a footnote. This paragraph records what was agreed in Round 5, not what ships.]**
 
 I also accept the remaining refinements from v0.4: the detailed capability taxonomy (`modify-project-docs / modify-governance / modify-verification-registry / modify-hook-policy / modify-evaluation-baseline`), `additionalContext` being only a *candidate transcript anchor* with a dual-sink policy, `ROLLED_BACK` as a persisted terminal status while `ROLLBACK_ITERATION` is an iteration decision, and moving the prototype questions into the validation backlog rather than treating them as unresolved architecture.
 
@@ -158,83 +158,18 @@ function proposePass(task):
 
 ## 15.4 Guidebook architecture
 
-**Precedence (final):**
+Moved to [ROADMAP.md](ROADMAP.md). About five of its ~35 concepts exist
+(semantic rules with ids, `Blocking:`/`Applies-To:` parsing, the read-only
+verifier, precedence in prose, the built-in rule set). The rest — skill
+resolution, conflict records, staleness workflows, the exception record —
+is unbuilt. It stays out of the design record because a reader cannot tell
+which half is real, and every one of them proposes building the other half.
 
-```text
-1. Non-overridable safety, authorization, privacy, organization policy
-2. Explicit current-task user intent
-   (overriding tiers 3–6 only via an exception record in the contract — no silent override)
-3. Sealed Task Contract
-4. Project Constitution
-5. Active rules (deterministic + semantic)
-6. Active ADRs
-7. Selected skills
-8. Approved project references
-9. Official external references
-10. Repository conventions
-11. General model knowledge
-```
+What IS built and load-bearing: `docs/standards/*.md` blocks parsed by
+`cgel rules`, merged with `plugin/rules/builtin.md`; a project rule with the
+same id replaces its built-in. See §15.5 for the contract schema and
+`plugin/rules/builtin.md` for the shipped rules.
 
-A conflict within the same tier → a conflict record in the context package; if it blocks an important decision → `ESCALATE`. Authority (`project > team > external-official > external-community`) only ranks within the same tier.
-
-**Constitution** — `.claude/rules/constitution.md`, capped at 1,000–2,000 tokens, always-on. Contains: non-overridable invariants, safety rules, definition of done, precedence, the requirement to use CGEL. Does not contain long tutorials/examples.
-
-**Skills** — native Claude Code skills, thin, with `references/` on demand. Mandatory frontmatter:
-
-```yaml
-name: add-agent-tool
-description: ...
-applies_when: [...]
-does_not_apply_when: [...]
-required_rules: [SEC-4, TD-2]
-required_references: [agent-tool-security]
-required_checks: [unit-tests, tool-contract-tests]
-protected_capabilities: []          # capabilities the task will need if this skill is used
-semantic_review_triggers: [...]
-```
-
-Skill = procedure; it does not override rules, and it does not modify the verification requirements of a running task. A new skill must pass the fresh-agent test (an agent given only the skill's files can carry out the procedure) before it enters the guidebook. Deprecation: `status: superseded`, IDs are never reused.
-
-**Semantic rules** — markdown in `docs/standards/`, each rule:
-
-```markdown
-## SEC-4 — Do not expose credentials in logs
-Blocking: yes            # machine-readable, mandatory
-Owner: security-team
-Applies-To: src/**
-Requirement: ...
-Evidence expected: ...
-Exceptions: ...
-```
-
-Deterministic rules = hooks/permissions/scripts (not prose). A rule YAML metadata engine = LATER (only when a central exception workflow, multi-team ownership, or compliance reporting is needed).
-
-**References** — `docs/standards/reference-index.yaml`, metadata-first:
-
-```yaml
-- id: auth-token-standard
-  source: docs/security/auth-tokens.md
-  authority: project
-  status: active            # active | superseded | draft
-  version: 3
-  owner: security-team
-  last_reviewed: 2026-07-01
-  review_after: 2026-10-01
-  applies_to: {paths: [src/auth/**], task_types: [feature, bug-fix]}
-  supersedes: [auth-token-standard-v2]
-```
-
-Resolver: metadata/path routing → task/domain routing → lexical fallback (semantic retrieval = LATER). The resolver returns a manifest carrying a digest for each reference (not just the ID). Stale (`now > review_after` or `status != active`): still readable, flagged `STALE`, must not be the sole blocking authority; if there is no active replacement → `ESCALATE`.
-
-**ADRs** — `docs/adr/`, routed through the reference index with `governs.paths`. An active ADR beats skills and repo conventions.
-
-**Loading policy (three rings):** (i) always-on: constitution + contract summary + state summary ≤ ~3k tokens; (ii) intake: the one-line-per-entry indexes; (iii) on-demand: the body of a skill/rule/reference/ADR according to routing. Verifier output capped at ~1.5k tokens. Explorer is used when the codebase is large / the component is unclear / there is a risk of bloat.
-
-**Governance mutability:** the entire guidebook + registry + hook config is **read-only during ACTIVE** (Edit/Write: HARD; any mechanism: EVIDENCE_GATED via the bundle digest in Profile A, HARD in Profile B). They are modified through the protected capabilities: `modify-project-docs` (ordinary), `modify-governance`, `modify-verification-registry`, `modify-hook-policy`, `modify-evaluation-baseline` (all human-sealed).
-
-### AI Standards and Knowledge Impact (settled)
-
-AI is a domain: AI skills (`change-system-prompt`, `add-agent-tool`, `modify-rag-pipeline`, ...), AI rules (`AI-*` IDs), AI references (models/prompts/retrieval/evals/incidents — the shortest `review_after` in the guidebook), AI evals = check IDs in the registry with thresholds. The governance bundle of an AI task additionally contains: `prompt_digest, model_config_digest, eval_suite_digest, eval_dataset_manifest_digest, safety_threshold_digest, tool_schema_digest`. An agent modifying AI behavior cannot at the same time modify the baseline that grades it (`modify-evaluation-baseline` is a separate task). AI task detection in the MVP: deterministic by path/file-type/skill/registry. There is no AI-specific runtime.
 
 ## 15.5 Data schemas
 
@@ -250,8 +185,7 @@ scope:
   forbidden: [database migrations, public API contract changes]
 protected_capabilities: [external-write]
 budgets: {max_iterations: 5, max_replans: 2}
-risk: {level: high, reasons: [...]}
-exceptions: []            # {target: RULE-ID, approved_by: human, reason, scope, expires_at}
+risk: {level: low|medium|high, reasons: [...]}   # required, no default; floored to high by protected_capabilities or a governance-reaching scope
 ai: {enabled: true, affected_components: [...], behavior_invariants: [...]}   # optional
 ```
 
@@ -282,14 +216,14 @@ checks:
 
 **Semantic verifier finding:** `{rule_id, status: fail|pass, confidence, evidence: [{path, line}], reason}` — probabilistic evidence; a blocking finding blocks PASS; critical rules may require human review or a dedicated scanner.
 
-**Attestation** (sanitized, export): `{task_id, contract_digest, governance_digest, criteria: [{id, checks: [{check_id, status, output_digest}]}], rule_findings, terminal_status, chain_head, timestamps}` — no raw secrets/logs. Policy: `persistence: local | ci-artifact | pr-comment | repository` (repository is never the default).
+**Attestation** (sanitized, export): `{task_id, contract_digest, governance_digest, criteria: [{id, checks: [{check_id, status, output_digest}]}], rule_findings, terminal_status, chain_head, timestamps}` — no raw secrets/logs. Persistence: `local` only — written to the runtime state store, never committed. The four-value enum this line used to specify was never implemented beyond `local`; the other three are now rejected (see 15.11, D-46).
 
 **Terminal decision record:** `{task_id, status: PASS|ROLLED_BACK|ESCALATE|ABORT, reason, evidence_chain_head, attestation_ref, timestamp}`.
 
 ## 15.6 Claude Code mapping
 
 **Native Claude Code behavior (used as-is):**
-- Hooks: `PreToolUse` (block via exit-2), `PostToolUse` (the primary evidence path — a non-zero Bash exit is still a tool success), `PostToolUseFailure` (the secondary path: tool-level failure), `Stop` (bounded continuation), `SessionStart` (inject the state summary on resume).
+- Hooks: `PreToolUse` (block via exit-2), `PostToolUse` (the evidence path — a non-zero Bash exit is still a tool success), `Stop` (bounded continuation), `SessionStart` (inject the state summary on resume). A tool-level *failure* (the call never completed) delivers no hook, so it is unobserved — see the limitations register.
 - Permission system: deny/ask rules; `ask` is the real human boundary for the seal + protected capabilities.
 - Subagents: `agents/*.md` with the `tools:` restriction (Verifier/Explorer read-only = HARD).
 - Skills: SKILL.md + frontmatter + `references/` progressive disclosure; `.claude/rules/` always-on.
@@ -316,7 +250,7 @@ cgel-plugin/                          # plugin (installed per machine)
 ├── scripts/                          # hook impls, stdlib-only, testable at subprocess level
 │   ├── contract_gate.py              #   PreToolUse Edit|Write
 │   ├── command_guard.py              #   PreToolUse Bash (fail-closed)
-│   ├── evidence_recorder.py          #   PostToolUse + PostToolUseFailure
+│   ├── evidence_recorder.py          #   PostToolUse
 │   └── stop_gate.py                  #   Stop continuation
 ├── bin/cgel                          # CLI — one decision line on stdout, errors to stderr
 ├── agents/{explorer.md, verifier.md}
@@ -359,7 +293,7 @@ Point 2 is a genuine contradiction with principle #3, not an implementation deta
 **D-36 (post-v1.0 amendment — four gaps found by running CGEL on itself):** the first real dogfooding pass hit four places where the design's own prescribed path did not work, so that the honest move looked like an override. Overrides that are mandatory on the normal path stop being decisions and become noise, which is how a gate quietly dies.
 
 1. **`ADVANCE` joins the iteration decision vocabulary** (§15.3). There was no success-shaped decision, so a passing iteration had to be logged as `RETRY` ("same plan, change the approach") or spend `REPLAN` budget. The retry-rate metric of §15.10 was therefore counting successes as retries and measuring nothing. `ADVANCE` is **evidence-gated**: it is refused unless every `expected_checks` entry of the open iteration has fresh passing evidence bound to the current seal and workspace, and refused when the iteration declared no expected checks. This is not decoration — an ungated `ADVANCE` would be a hole straight through the default-same guard, letting a failed check be carried forward under a success-shaped label.
-2. **A task may reseal itself from `SEALED`/`ACTIVE`, not only from `BLOCKED`.** The task skill answers a wrongly-blocked path with "tell the user, amend the contract, and reseal", but the CLI refused to reseal an open task, so the prescribed escape hatch was reachable only by accident — when something else had already forced `BLOCKED`. Sealing a *different* task over an open one is still refused, and the exact-digest match and human `seal_mode` are unchanged: amendment stays a deliberate, re-approved act.
+2. **A task may reseal itself from `SEALED`/`ACTIVE`, not only from `BLOCKED`.** The task skill answers a wrongly-blocked path with "tell the user, amend the contract, and reseal", but the CLI refused to reseal an open task, so the prescribed escape hatch was reachable only by accident — when something else had already forced `BLOCKED`. Sealing a *different* task over an open one is still refused, and the exact-digest match is unchanged: amendment stays a deliberate, re-approved act.
 3. **The dirty-tree check now distinguishes the task's own authorised work from the user's.** A reseal happens mid-flight, so the task's in-scope edits are necessarily uncommitted; counting them as "the user's work" made `--allow-dirty` mandatory on the one path the design prescribes. On reseal, paths already inside the *previously sealed* `scope.allowed` no longer block. Paths outside it still do, and a task's first seal is unchanged.
 4. **A `modify-governance` task can now finish cleanly.** This follows from (2) and (3); nothing about the guard itself was relaxed. **The `sealed-guidebook-bundle-changed → BLOCKED` rule is deliberately kept**: a task that edits the measure and keeps running would be grading itself against a yardstick it just wrote — principle #3 inverted. The reseal is where a human re-approves the new measure, and that is the point, not an obstacle. The fix was to make the recovery reachable, not to remove the guard.
 
@@ -390,9 +324,13 @@ A note on what D-37 makes unreachable: because rot-prone commands are now refuse
 
 **D-43 (post-v1.0 amendment — bundle digest caching and excludes):** governance-bundle file digests are cached by (mtime_ns, size) in the runtime state store — same principal, so nothing Profile A had not already conceded — and `.cgel/config.json` `bundle_exclude` globs drop churn-prone paths from the sealed measure while leaving them edit-gated. The config file itself is always digested, so an exclusion cannot arrive invisibly mid-task. Why: a gitignored repo-local skill voided open seals three times in one session, each void costing summary + reseal + a full re-verify; the sealed-guidebook-bundle-changed → BLOCKED rule itself is deliberately kept (D-36 explains why), this only stops files that are not anyone's yardstick from pulling the trigger, and D-38 makes the recovery cheap (same digest, no new approval).
 
-**D-45 (post-v1.0 amendment — the production bar):** four blocking review rules ship with the plugin (`CGEL-IMPACT-1` all impacted code updated, `CGEL-DEBT-1` no new debt, `CGEL-COMMENT-1` comment quality, `CGEL-SECRET-1` no hardcoded secrets), merged under every project's own rules (same-id project rule wins; `builtin_rules: off` removes them) — so semantic verification triggers at medium+ risk everywhere and the verifier's duties are concrete (grep, don't vibe). A read-only opus **challenger** agent reviews the user's requested design before sealing, and the contract's optional `intent_review` field records the outcome (summary warns when it is missing at medium/high risk): the plugin cannot force good judgment, it forces the judgment to happen and leave a trace, because the user's own stated worry was "help me on the best thing, not do anything follow me". A **push gate** in the command guard requires a recorded question approval for every `git push` (config `push_gate: off`), because a company remote has no unpush. And `cgel seal` writes the legacy CURRENT pointer again — installed hooks one release behind read it during upgrade windows; new code ignores it and close removes it. Honesty unchanged: the built-ins and the challenge are EVIDENCE_GATED / GUIDANCE-with-artifact, not hard proofs; the push gate shares D-38's transcript trust class.
+**D-45 (post-v1.0 amendment — the production bar):** four blocking review rules ship with the plugin (`CGEL-IMPACT-1` all impacted code updated, `CGEL-DEBT-1` no new debt, `CGEL-COMMENT-1` comment quality, `CGEL-SECRET-1` no hardcoded secrets), merged under every project's own rules (same-id project rule wins; `builtin_rules: off` removes them) — so semantic verification triggers at medium+ risk everywhere and the verifier's duties are concrete (grep, don't vibe). A read-only opus **challenger** agent reviews the user's requested design before sealing, and the contract's optional `intent_review` field records the outcome (summary warns when it is missing at medium/high risk): the plugin cannot force good judgment, it forces the judgment to happen and leave a trace, because the user's own stated worry was "help me on the best thing, not do anything follow me". A **push gate** in the command guard requires a recorded question approval for every `git push` (config `push_gate: off`), because a company remote has no unpush. And `cgel seal` writes the legacy CURRENT pointer again — installed hooks one release behind read it during upgrade windows; new code ignores it and close removes it. Honesty unchanged: the built-ins and the challenge are EVIDENCE_GATED / GUIDANCE-with-artifact, not hard proofs; the push gate shares D-38's transcript trust class. **Superseded in part by D-46: two of the four rules are advisory, and the risk level that triggers them is no longer defaulted.**
 
 **D-44 (post-v1.0 amendment — model routing and the worker):** the explorer runs on a fast model (`model: sonnet`), the verifier on a strong one (`model: opus`), and a new `worker` agent (sonnet; Read/Grep/Glob/Edit/Write, no Bash) executes precisely-specified mechanical changes inside the sealed scope — contract decisions, the loop, and every cgel command stay with the main model. Why: the user asked for exactly this split ("can we make the opus for plan and the sonnet for coding"), and the hooks make it safe — the worker's edits pass through the same contract gate and recorder as anyone else's.
+
+**D-46 (post-v1.0 amendment — delete the controls nothing reads; make the seal screen true):** five mechanisms were removed because each was a control the user was *shown* while nothing read it, which is the one defect a product whose thesis is "this table is true" cannot absorb. `exceptions` was in the schema, printed at the seal ceremony, and named by `CGEL-DEBT-1` as the only legitimate way to accept debt — and read by nothing, so a user could approve a waiver that had no effect (accepted debt is now declared in the iteration decision or the close reason, where a human reads it). `seal_mode` had five write sites and no branch; it is deleted rather than wired, because it keys on `protected_capabilities` — a free, unvalidated list written by the graded party — so implementing the `if` would let the model omit one array element and seal itself with no human. The disclosure that matters (`Protected capabilities:` at summary) stays, as the model's stated duty. `PostToolUseFailure` is **not a Claude Code hook event**: it was registered in hooks.json, documented in 15.6 as native behaviour used as-is, and pinned by a test — so an invented name certified itself. It never fired; the real consequence is now a row in 15.9. `unblock --reason` was parsed and read by nothing. `attestation.persistence` advertised `local | ci-artifact | pr-comment | repository` and implemented only `local`; the other three are rejected rather than accepted with a footnote (superseding the Round-5 answer at the head of this document). `CGEL-DEBT-1` and `CGEL-COMMENT-1` are demoted to advisory — the split is ground truth, not importance: `CGEL-IMPACT-1` and `CGEL-SECRET-1` are checkable by searching, so a block is arguable, while blocking on taste at close with an ungated ESCALATE as the only exit is how a lint gate earns itself an off switch. Both still run, are recorded, and reach the human.
+
+And the change the whole amendment exists for: **`risk.level` has no default.** It defaulted to `low` — the level at which `_semantic_requirement` returns `required: False` — so the challenger, the built-in rules and the opus verifier stood down on every task that did not explicitly say otherwise, including the task skill's own worked example. `cmd_summary` never called `_semantic_requirement`, so the screen where the user approves the digest said `Risk: low` and never said that nothing would grade the work. The level is now a claim the contract must state and argue at every level (`risk.reasons` non-empty), rejected at validate, summary and seal; the summary prints the machine's verdict above the digest and carries `semantic=required|none` on the decision line; and two structural cases floor the level to `high` regardless of the claim — requesting `protected_capabilities`, or a `scope.allowed` that reaches a governance path. The floor is deliberately narrow and dumb: both triggers are literally true, and the escape is a tighter scope rather than an argument. A floor that fired on a guess ("more than N files") would be one the reader learns to ignore, which is the D-36 death. 15.4 and 15.10 moved to ROADMAP.md for the same reason as the deletions: a design record that mixes what-is with what-might-be teaches its readers to propose the wrong work.
 
 ## 15.8 MVP implementation plan (walking skeleton)
 
@@ -424,16 +362,16 @@ A note on what D-37 makes unreachable: because rot-prone commands are now refuse
 | Uncommitted user changes | dirty-tree detection from Phase 0 | intersects scope → escalate/user confirm; worktree via copy-in/patch-out; rollback never touches the checkout |
 | Missing credentials | `failure_kind: permission_denied/environment` | BLOCKED (no RETRY); the user is required |
 | Unsafe operation request | precedence #1 + command guard fail-closed | deny + explicit ESCALATE; never silent |
+| **Tool-level failure (the call never completed)** | **none — unobserved** | An aborted or errored tool call delivers no `PostToolUse`, so the recorder never sees it and no event is chained. This was believed covered by a `PostToolUseFailure` hook, registered in hooks.json and documented here as native behaviour; that event does not exist and never fired. The consequence is bounded: a call that did not complete did not edit anything, so the edit counter cannot miss a real edit — what is lost is the record that an attempt was made. |
 
 ## 15.10 Evaluation metrics
 
-Measurement sources: attestations + iterations.jsonl + hook logs (everything is already recorded by design).
+Moved to [ROADMAP.md](ROADMAP.md). None of it is implemented: there is no
+`cgel metrics`, and the measurement sources it names are not aggregated
+anywhere. It is also not buildable yet — a number computed over an evidence
+chain with silent holes is worse than no number, because it is a number you
+would then cite.
 
-- **Effectiveness:** first-pass success rate; average iterations/task; retry rate; replan rate; time-to-PASS; token cost/task.
-- **Safety:** scope-violation attempts (hook blocks); evidence-gate rejections (proposePass refused); governance-bundle-changed incidents; escaped defect rate (regressions after PASS); rollback count.
-- **Guidebook:** retrieval precision (references loaded vs cited in decisions); stale-reference incidents; the verifier's rule-citation rate; skill fresh-agent test pass rate.
-- **Human:** human escalation rate (of the right kind — a "good" escalation is the kind that blocks a dangerous action); approval latency.
-- **MVP acceptance thresholds (proposed):** 0 PASSes lacking evidence (per audit); 0 scope violations slipping past the Edit/Write gate; the default-same guard triggers correctly ≥ 90% on the demo failure set; verifier output ≤ cap on 95% of runs.
 
 ## 15.11 Final decision log
 
@@ -443,7 +381,7 @@ Measurement sources: attestations + iterations.jsonl + hook logs (everything is 
 
 **Important trade-offs accepted:** (1) Profile A trades tamper-proofing for convenience — compensated by tamper-evidence + honest documentation; (2) the sealed bundle trades mid-task flexibility for the integrity of the yardstick — modifying the guidebook mid-flight demands a reseal; (3) the conditional verifier trades coverage for cost — compensated by deterministic checks always being mandatory; (4) CLI-first trades a beautiful API for validation speed — MCP awaits Phase 1 data.
 
-**Validation backlog (prototype facts, not architecture):** `V-1` audit sink portability & user-visibility (Q-10); `V-2` copy-in/patch-out with rename/binary/submodule (Q-11); `V-3` failure normalization across pytest/Jest/Cargo (Q-12); `V-4` Stop bound + PostToolUse/PostToolUseFailure payload; `V-5` apply-back 3-way conflicts.
+**Validation backlog (prototype facts, not architecture):** `V-1` audit sink portability & user-visibility (Q-10); `V-2` copy-in/patch-out with rename/binary/submodule (Q-11); `V-3` failure normalization across pytest/Jest/Cargo (Q-12); `V-4` Stop bound + PostToolUse payload; `V-5` apply-back 3-way conflicts.
 
 **Deferred questions:** MCP interface (after Phase 1); the choice of the Profile B boundary according to the deployment environment; rule YAML governance (LATER, per the D-12 criteria).
 

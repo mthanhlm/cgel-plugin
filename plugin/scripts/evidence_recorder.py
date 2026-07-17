@@ -1,4 +1,4 @@
-"""CGEL PostToolUse / PostToolUseFailure recorder.
+"""CGEL PostToolUse recorder.
 
 Appends hash-chained events to the task's events.jsonl in the runtime
 state store:
@@ -45,7 +45,6 @@ def main():
         return 0
 
     tool = payload.get("tool_name") or ""
-    event_name = payload.get("hook_event_name") or "PostToolUse"
     cwd = payload.get("cwd") or os.getcwd()
     repo_root = C.find_repo_root(cwd)
     if not repo_root:
@@ -57,7 +56,7 @@ def main():
     tool_input = payload.get("tool_input") or {}
     record = None
 
-    if tool in EDIT_TOOLS and event_name == "PostToolUse":
+    if tool in EDIT_TOOLS:
         file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
         if not file_path:
             return 0
@@ -77,7 +76,6 @@ def main():
             return 0
         record = {
             "type": "bash",
-            "event": event_name,
             "command_head": command[:160],
             "command_digest": C.sha256_bytes(command.encode("utf-8", "replace")),
             "exit_code": _exit_code_of(payload),

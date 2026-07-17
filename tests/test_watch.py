@@ -22,6 +22,7 @@ CONTRACT = {
         }
     ],
     "scope": {"allowed": ["src/**", "docs/**"]},
+    "risk": {"level": "low", "reasons": ["fixture: exercises watch globs"]},
 }
 
 

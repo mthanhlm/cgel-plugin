@@ -10,6 +10,7 @@ load-bearing product, not boilerplate, and deleting one has to fail a test.
 
 import json
 import os
+import re
 import unittest
 
 from hookrunner import PLUGIN_ROOT, REPO_ROOT
@@ -116,6 +117,184 @@ class TheBypassIsNotAdvertisedToTheModel(unittest.TestCase):
             "keystrokes from the model's",
         )
         self.assertIn("string, not an identity", readme)
+
+
+class TheProductionBarIsDescribedAsItIs(unittest.TestCase):
+    """Every public description of the built-in rules must agree with
+    plugin/rules/builtin.md, which is the only thing the parser reads.
+
+    "Four blocking rules" was true of the prose and false of the product, and
+    the prose is what a user decides to trust."""
+
+    def _blocking(self):
+        source = read("plugin", "rules", "builtin.md")
+        rules = {}
+        current = None
+        for line in source.splitlines():
+            if line.startswith("## CGEL-"):
+                current = line.split()[1]
+            elif line.startswith("Blocking:") and current:
+                rules[current] = line.split(":", 1)[1].strip() == "yes"
+        return rules
+
+    def test_two_block_and_two_advise(self):
+        rules = self._blocking()
+        self.assertEqual(
+            {r for r, b in rules.items() if b}, {"CGEL-IMPACT-1", "CGEL-SECRET-1"}
+        )
+        self.assertEqual(
+            {r for r, b in rules.items() if not b},
+            {"CGEL-DEBT-1", "CGEL-COMMENT-1"},
+        )
+
+    def _every_shipped_description(self):
+        """README + manifest + every skill/agent/rule the model reads.
+
+        This used to check README and the manifest only, while the docstring
+        claimed "every public description" — and that gap is exactly what let
+        loop/SKILL.md go on calling CGEL-DEBT-1 blocking after it was
+        demoted. A test whose stated property is wider than its coverage is
+        the same defect it is meant to catch."""
+        yield "README.md", read("README.md")
+        yield "plugin.json", plugin_manifest()["description"]
+        for sub in ("skills", "agents", "rules", "commands"):
+            base = os.path.join(PLUGIN_ROOT, sub)
+            for root, _, files in os.walk(base):
+                for name in files:
+                    if not name.endswith(".md"):
+                        continue
+                    path = os.path.join(root, name)
+                    with open(path, encoding="utf-8") as fh:
+                        yield os.path.relpath(path, PLUGIN_ROOT), fh.read()
+
+    def test_no_shipped_prose_calls_all_four_blocking(self):
+        for label, text in self._every_shipped_description():
+            flat = " ".join(text.split())
+            self.assertNotIn("Four blocking rules", flat, label)
+            self.assertNotIn("four blocking rules", flat, label)
+            self.assertNotIn("blocking review rules (impacted code", flat, label)
+
+    def test_no_shipped_prose_calls_an_advisory_rule_blocking(self):
+        # The specific stale claim the verifier found: prose asserting that a
+        # demoted rule still blocks.
+        advisory = {r for r, b in self._blocking().items() if not b}
+        for label, text in self._every_shipped_description():
+            flat = " ".join(text.split())
+            for rule_id in advisory:
+                for claim in (
+                    "%s are blocking" % rule_id,
+                    "%s is blocking" % rule_id,
+                    "%s blocks" % rule_id,
+                ):
+                    self.assertNotIn(claim, flat, "%s: %s" % (label, claim))
+            # ...and the compound form that named two rules at once.
+            self.assertNotIn(
+                "CGEL-IMPACT-1 and CGEL-DEBT-1 are blocking", flat, label
+            )
+
+    def test_the_readme_names_which_rules_block(self):
+        readme = " ".join(read("README.md").split())
+        for rule_id in ("CGEL-IMPACT-1", "CGEL-SECRET-1"):
+            self.assertIn(rule_id, readme)
+        self.assertIn("Two block and two advise", readme)
+
+
+class TheRiskLevelIsDocumentedAsAClaim(unittest.TestCase):
+    """risk.level decides whether anything grades the work. It used to
+    default to `low` — the level at which nothing does — and no document
+    said so."""
+
+    def test_readme_says_there_is_no_default(self):
+        readme = " ".join(read("README.md").split())
+        self.assertIn("no default", readme)
+        self.assertIn("risk.level", readme)
+
+    def test_the_task_skill_does_not_teach_a_reflex_low(self):
+        # The worked example used `Risk: low` on an auth fix, which is the
+        # reflex the old default trained.
+        skill = " ".join(read("plugin", "skills", "task", "SKILL.md").split())
+        self.assertNotIn("Risk: low — no API change", skill)
+        self.assertIn("there is no default", skill)
+
+
+class TheSchemasMatchTheValidator(unittest.TestCase):
+    """A schema that disagrees with the validator is the same defect as a doc
+    that disagrees with the code — and worse here, because task/SKILL.md tells
+    the model to READ the contract schema. `default: "low"` in the schema
+    taught exactly the reflex the validator now rejects.
+
+    Caught by the verifier on this very task: the deletion was half-done."""
+
+    def _schema(self, name):
+        return json.loads(read("plugin", "schemas", name))
+
+    def test_risk_is_required_and_has_no_default(self):
+        risk = self._schema("task-contract.schema.json")["properties"]["risk"]
+        self.assertNotIn("default", risk["properties"]["level"])
+        self.assertEqual(set(risk["required"]), {"level", "reasons"})
+        self.assertEqual(risk["properties"]["reasons"]["minItems"], 1)
+
+    def test_the_contract_schema_requires_risk(self):
+        self.assertIn("risk", self._schema("task-contract.schema.json")["required"])
+
+    def test_the_retired_exceptions_key_is_gone_from_the_schema(self):
+        self.assertNotIn(
+            "exceptions", self._schema("task-contract.schema.json")["properties"]
+        )
+
+    def test_the_attestation_schema_does_not_advertise_unbuilt_policies(self):
+        desc = self._schema("attestation.schema.json")["description"]
+        self.assertNotIn("local (default) | ci-artifact", desc)
+        self.assertIn("`local` only", desc)
+
+
+class TheDecisionLogHasNoDanglingCitations(unittest.TestCase):
+    """Every `D-NN` a document cites must be a decision the log defines.
+
+    Found by the verifier, on the very task whose purpose was deleting
+    pointers to things that do not exist: a correction here cited "see 15.11,
+    D-46" when D-46 did not exist yet. The log is the repo's own claim that
+    its history is recorded; a citation to a decision nobody wrote is the
+    same defect as a schema field nothing reads."""
+
+    def _text(self):
+        return read("ARCHITECT.md") + read("ROADMAP.md") + read("README.md")
+
+    def test_every_cited_decision_is_defined(self):
+        architect = read("ARCHITECT.md")
+        # Two shapes, both real: D-1..D-34 are accepted en bloc in 15.11
+        # ("Accepted (D-1 … D-34)", with D-31..D-34 spelled out inline);
+        # every post-v1.0 amendment gets its own **D-NN heading.
+        amendments = set(re.findall(r"^\*\*(D-\d+)", architect, re.M))
+        accepted_en_bloc = {"D-%d" % n for n in range(1, 35)}
+        defined = amendments | accepted_en_bloc
+        cited = {"D-" + n for n in re.findall(r"\bD-(\d+)\b", self._text())}
+        dangling = cited - defined
+        self.assertEqual(
+            dangling,
+            set(),
+            "cited but never defined in ARCHITECT's decision log: %s"
+            % ", ".join(sorted(dangling)),
+        )
+
+    def test_the_en_bloc_range_is_the_one_the_log_declares(self):
+        # Guards the assumption above: if the log's accepted range moves, the
+        # test must move with it rather than quietly widening.
+        self.assertIn("**Accepted (D-1 … D-34):**", read("ARCHITECT.md"))
+
+    def test_the_log_records_this_release(self):
+        self.assertIn("**D-46", read("ARCHITECT.md"))
+
+    def test_the_readme_does_not_understate_the_log(self):
+        # README claimed "decision log D-1..D-34" while the log ran to D-45 —
+        # a reader following the pointer found eleven decisions they were not
+        # told about, including every one that changed what the gate does.
+        readme = " ".join(read("README.md").split())
+        self.assertNotIn("decision log D-1..D-34", readme)
+        highest = max(
+            int(n) for n in re.findall(r"^\*\*D-(\d+)", read("ARCHITECT.md"), re.M)
+        )
+        self.assertIn("D-%d" % highest, readme)
 
 
 class LicenseMatchesTheManifest(unittest.TestCase):

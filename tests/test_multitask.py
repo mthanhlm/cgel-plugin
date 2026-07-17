@@ -19,6 +19,7 @@ TASK_A = {
         {"id": "AC-1", "description": "code ok", "required_checks": ["ok-check"]}
     ],
     "scope": {"allowed": ["src/**"]},
+    "risk": {"level": "low", "reasons": ["fixture: parallel-task code work"]},
 }
 TASK_B = {
     "task": {"id": "TASK-B", "type": "docs", "goal": "Docs work"},
@@ -26,6 +27,11 @@ TASK_B = {
         {"id": "AC-1", "description": "docs ok", "required_checks": ["ok-check"]}
     ],
     "scope": {"allowed": ["docs/**"]},
+    # Floored to high by normalize_contract: docs/** contains
+    # docs/standards/**, so this scope really can rewrite the rules that
+    # judge it. Literally true, and the escape is a tighter scope
+    # (docs/guide/**) rather than an argument.
+    "risk": {"level": "low", "reasons": ["fixture: parallel-task docs work"]},
 }
 
 

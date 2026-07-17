@@ -35,17 +35,6 @@
         ]
       }
     ],
-    "PostToolUseFailure": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/evidence_recorder.py\""
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "hooks": [

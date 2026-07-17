@@ -4,22 +4,47 @@
   "title": "CGEL Task Contract (Phase 0)",
   "description": "Reference schema. The shipped validator is hand-rolled (stdlib only) but mirrors these constraints.",
   "type": "object",
-  "required": ["task", "acceptance_criteria", "scope"],
+  "required": [
+    "task",
+    "acceptance_criteria",
+    "scope",
+    "risk"
+  ],
   "properties": {
     "task": {
       "type": "object",
-      "required": ["id", "type", "goal"],
+      "required": [
+        "id",
+        "type",
+        "goal"
+      ],
       "properties": {
-        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
-        "type": {"type": "string", "minLength": 1},
-        "goal": {"type": "string", "minLength": 1}
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "domains": {
       "type": "object",
       "properties": {
-        "primary": {"type": "string"},
-        "additional": {"type": "array", "items": {"type": "string"}}
+        "primary": {
+          "type": "string"
+        },
+        "additional": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "acceptance_criteria": {
@@ -27,71 +52,138 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["id", "description"],
+        "required": [
+          "id",
+          "description"
+        ],
         "properties": {
-          "id": {"type": "string", "minLength": 1},
-          "description": {"type": "string", "minLength": 1},
-          "required_checks": {"type": "array", "items": {"type": "string"}}
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "required_checks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       }
     },
     "scope": {
       "type": "object",
-      "required": ["allowed"],
+      "required": [
+        "allowed"
+      ],
       "properties": {
-        "allowed": {"type": "array", "minItems": 1, "items": {"type": "string"}},
-        "forbidden": {"type": "array", "items": {"type": "string"}},
-        "notes": {"type": "array", "items": {"type": "string"}}
+        "allowed": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "forbidden": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "protected_capabilities": {
       "type": "array",
-      "items": {"type": "string"},
+      "items": {
+        "type": "string"
+      },
       "description": "e.g. modify-governance, modify-verification-registry, modify-hook-policy, modify-evaluation-baseline, external-write, dependency-change, schema-migration, public-api-change"
     },
     "budgets": {
       "type": "object",
       "properties": {
-        "max_iterations": {"type": "integer", "minimum": 1, "default": 5},
-        "max_replans": {"type": "integer", "minimum": 0, "default": 2}
+        "max_iterations": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5
+        },
+        "max_replans": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 2
+        }
       }
     },
     "risk": {
       "type": "object",
+      "required": [
+        "level",
+        "reasons"
+      ],
+      "description": "Decides whether anything grades this work: at `low` no rule judges the change and no finding can stop PASS. There is NO default — state the level and argue it. Two structural cases floor it to `high` regardless of the claim: requesting protected_capabilities, or a scope.allowed that reaches a governance path.",
       "properties": {
-        "level": {"enum": ["low", "medium", "high"], "default": "low"},
-        "reasons": {"type": "array", "items": {"type": "string"}}
-      }
-    },
-    "exceptions": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["target", "approved_by", "reason"],
-        "properties": {
-          "target": {"type": "string", "description": "RULE-ID being excepted"},
-          "approved_by": {"type": "string"},
-          "reason": {"type": "string"},
-          "scope": {"type": "string"},
-          "expires_at": {"type": "string"}
+        "level": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "why this level is honest; a level with no argument is a default wearing a claim's clothes"
         }
       }
     },
     "ai": {
       "type": "object",
       "properties": {
-        "enabled": {"type": "boolean"},
-        "affected_components": {"type": "array", "items": {"type": "string"}},
-        "behavior_invariants": {"type": "array", "items": {"type": "string"}}
+        "enabled": {
+          "type": "boolean"
+        },
+        "affected_components": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "behavior_invariants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "intent_review": {
       "type": "object",
       "description": "Outcome of the pre-seal design challenge: what was questioned about the user's requested approach, and what was chosen. Expected (warned when absent) for medium/high risk.",
       "properties": {
-        "assessed": {"type": "boolean"},
-        "concerns": {"type": "array", "items": {"type": "string"}},
-        "alternative_chosen": {"type": "string"}
+        "assessed": {
+          "type": "boolean"
+        },
+        "concerns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "alternative_chosen": {
+          "type": "string"
+        }
       }
     }
   }

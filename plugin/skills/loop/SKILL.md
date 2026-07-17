@@ -28,8 +28,9 @@ ever decide the task this session owns.
    here. Build to the production bar, especially in a messy codebase:
    reuse existing helpers instead of duplicating them, fix root causes
    instead of papering over them, update every caller/test/doc the change
-   touches (CGEL-IMPACT-1 and CGEL-DEBT-1 are blocking review rules — the
-   verifier greps). Leave code cleaner than you found it: never write a
+   touches (CGEL-IMPACT-1 BLOCKS and the verifier greps for it; CGEL-DEBT-1
+   advises — it still reaches the user, it just cannot stop PASS on its
+   own). Leave code cleaner than you found it: never write a
    comment that just restates what the code does, and delete any redundant
    or obsolete comment you pass through in a file you're already editing —
    even one you did not write. Comments earn their place by explaining

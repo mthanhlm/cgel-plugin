@@ -118,23 +118,60 @@ question or starts new work in the same repo:
 
 ## The production bar (built-in review rules)
 
-Four blocking rules ship with the plugin and merge into every project's
-rule set (`cgel rules` lists them as `cgel-builtin`):
+Four rules ship with the plugin and merge into every project's rule set
+(`cgel rules` lists them as `cgel-builtin`). **Two block and two advise**:
 
-| Rule | What the verifier must actually do |
-|---|---|
-| `CGEL-IMPACT-1` — all impacted code updated | grep for stale references and old call shapes of every changed symbol |
-| `CGEL-DEBT-1` — no new technical debt | find duplicated logic, dead code, workarounds where the root cause was in reach |
-| `CGEL-COMMENT-1` — comments earn their place | flag narration, ownerless TODOs, commented-out code, debug prints |
-| `CGEL-SECRET-1` — no hardcoded secrets | scan changed files for credential/token/password shapes |
+| Rule | Blocks? | What the verifier must actually do |
+|---|---|---|
+| `CGEL-IMPACT-1` — all impacted code updated | **yes** | grep for stale references and old call shapes of every changed symbol |
+| `CGEL-SECRET-1` — no hardcoded secrets | **yes** | scan changed files for credential/token/password shapes |
+| `CGEL-DEBT-1` — no new technical debt | advisory | find duplicated logic, dead code, workarounds where the root cause was in reach |
+| `CGEL-COMMENT-1` — comments earn their place | advisory | flag narration, ownerless TODOs, commented-out code, debug prints |
 
-Because blocking rules now always exist, **semantic verification is
-mandatory at medium+ risk in every CGEL repo**: the opus verifier runs,
-its findings are recorded and chained, and a blocking finding stops PASS.
+The split is about **ground truth, not importance**. IMPACT-1 and SECRET-1
+can be checked by searching — a stale call site is there or it is not — so
+a finding is checkable and a block is arguable. DEBT-1 and COMMENT-1 are
+judgements of taste about duplication and comment quality; blocking on
+taste, at close, with an ungated ESCALATE as the only exit, is how a lint
+gate earns itself a config flag turning it off. All four still run, are
+recorded, and reach the human; only the first two can stop a PASS.
+
+Because blocking rules always exist, **semantic verification is required at
+medium+ risk in every CGEL repo**: the opus verifier runs, its findings are
+recorded and chained, and a blocking finding stops PASS. But `risk.level`
+has no default — the contract must state and argue one (see below), so
+"medium+" is a claim the author makes, not a level they drift into.
+
 Honesty: these are EVIDENCE_GATED model judgments — recorded, escalated to
 the human on disagreement, not deterministic proofs. A project rule with
 the same id replaces its built-in; `.cgel/config.json`
 `{"builtin_rules": "off"}` removes them.
+
+### The risk level is a claim, not a default
+
+`risk.level` (`low` | `medium` | `high`) decides whether anything grades the
+work: at `low`, no rule judges the change and no finding can stop PASS.
+There is **no default** — a contract with no `risk`, no `level`, or no
+`reasons` is rejected at `validate`, `summary` and `seal`. `cgel summary`
+prints the machine's verdict above the digest you approve, in one of two
+shapes:
+
+```text
+Semantic verification: REQUIRED (blocking rules present at risk.level=medium)
+  the read-only verifier will judge this change against: CGEL-IMPACT-1, CGEL-SECRET-1
+  a blocking finding stops PASS.
+
+Semantic verification: NOT REQUIRED at risk.level=low — no rule will judge
+this change and no finding can stop PASS. Only the registered checks grade it.
+```
+
+Two structural cases **floor the level to `high`** regardless of the claim,
+because they are facts about the scope rather than opinions about the work:
+the contract requests `protected_capabilities`, or `scope.allowed` reaches a
+governance path (`.cgel/**`, `.claude/**`, `docs/standards/**`, `docs/adr/**`,
+`hooks/**`). The summary says so and names the reason. The escape is a
+tighter scope, not an argument — note that `docs/**` contains
+`docs/standards/**` and therefore floors; `docs/guide/**` does not.
 
 ## Challenge the intent (before the seal)
 
@@ -325,7 +362,7 @@ cd your-project && cgel init
 
 # task flow (the cgel:task skill walks the model through this)
 #   1. draft  .task/contract.json
-cgel summary                      # validates + prints summary + SUMMARY ... digest=... seal_mode=auto|human
+cgel summary                      # validates + prints summary + SUMMARY ... digest=... semantic=required|none
 #   2. ONE AskUserQuestion carrying the digest; the user taps Approve
 cgel seal TASK-1 --digest sha256:... \
   && cgel iterate open --hypothesis "H-1: ..." --change "..." --expect unit-tests
@@ -402,4 +439,7 @@ conflicts. MCP interface for the control plane: decide with Phase 1 usage
 data.
 
 Design record: [ARCHITECT.md](ARCHITECT.md) — the signed-off CGEL v1.0
-consolidated architecture (decision log D-1..D-34).
+consolidated architecture, plus the post-v1.0 amendments D-35..D-46 that
+record every change since. [ROADMAP.md](ROADMAP.md) holds the parts that
+were designed and never built — it is a wish list, kept apart from the
+design record on purpose.

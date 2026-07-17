@@ -76,6 +76,18 @@ class GuardTestCase(unittest.TestCase):
         ):
             self.assertAllowed(command)
 
+    def test_a_commit_message_mentioning_a_push_is_not_a_push(self):
+        # Found by dogfooding: the old guard blocked the commit that FIXED
+        # this, because the message quoted `grep -rn 'git push'` as an example
+        # of a false block. Both shapes must pass — the heredoc one is not
+        # theoretical, it is the exact command that was refused.
+        self.assertAllowed(
+            "git add -A && git commit -q -F - <<'EOF'\n"
+            "fix: a grep for 'git push' was wrongly blocked\n"
+            "EOF"
+        )
+        self.assertAllowed("git commit -m 'docs: a grep for git push was blocked'")
+
     def test_force_if_includes_is_push_gated_not_force_blocked(self):
         # --force-if-includes is the safe sibling of --force-with-lease; the
         # lookahead only exempted -with-lease, so it was blocked as a force

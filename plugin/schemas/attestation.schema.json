@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cgel.dev/schemas/attestation.schema.json",
   "title": "CGEL Attestation (Phase 3)",
-  "description": "Sanitized, exportable task summary: ids, statuses, digests. No raw command output, no logs, no secrets. Persistence policy: local (default) | ci-artifact | pr-comment | repository — repository is never a default (D-29).",
+  "description": "Sanitized, exportable task summary: ids, statuses, digests. No raw command output, no logs, no secrets. Persistence: `local` only — the attestation is written to the runtime state store and never committed. An enum of local|ci-artifact|pr-comment|repository was once advertised here and only `local` was ever implemented; `cgel attest` now rejects the other three rather than accepting them and printing a footnote.",
   "type": "object",
   "required": ["task_id", "terminal_status", "contract_digest", "criteria"],
   "properties": {

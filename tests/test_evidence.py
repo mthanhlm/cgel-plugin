@@ -20,6 +20,7 @@ CONTRACT = {
         }
     ],
     "scope": {"allowed": ["src/**"]},
+    "risk": {"level": "low", "reasons": ["fixture: exercises the evidence pipeline"]},
 }
 
 REGISTRY = {

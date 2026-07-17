@@ -21,10 +21,15 @@ import unittest
 from hookrunner import PLUGIN_ROOT
 
 SKILLS = ("task", "loop", "attest")
+# Every event here must be a REAL Claude Code hook event. `PostToolUseFailure`
+# used to sit in this tuple: it is not one, it never fired, and registering it
+# in hooks.json was dead config that ARCHITECT.md documented as "native
+# behaviour used as-is". This constant is what made the invented name look
+# certified — the test below compared hooks.json against it, so the two agreed
+# with each other and neither agreed with the harness.
 HOOK_EVENTS = (
     "PreToolUse",
     "PostToolUse",
-    "PostToolUseFailure",
     "Stop",
     "SessionStart",
 )
@@ -70,8 +75,11 @@ class VacuousPassGuard(unittest.TestCase):
             self.assertGreater(len(text), 500, "skills/%s/SKILL.md too short" % name)
 
     def test_hook_commands_are_found(self):
+        # `len(events) == len(HOOK_EVENTS)` was vacuous: it compared the list
+        # to itself and passed for any four names, invented or not. Compare
+        # the identities.
         events, commands = hook_commands()
-        self.assertEqual(len(events), len(HOOK_EVENTS))
+        self.assertEqual(set(events), set(HOOK_EVENTS))
         self.assertGreaterEqual(len(commands), len(HOOK_EVENTS))
 
 
@@ -186,9 +194,13 @@ class HooksAreAControlPlane(unittest.TestCase):
         for command in commands:
             self.assertRegex(command, HOOK_COMMAND_RE)
 
-    def test_all_five_events_are_registered(self):
+    def test_every_registered_event_is_a_real_hook_event(self):
+        # The property is not "hooks.json matches our tuple" — that is what
+        # let an invented event certify itself. It is that hooks.json
+        # registers exactly the events the harness actually delivers.
         events, _ = hook_commands()
         self.assertEqual(set(events), set(HOOK_EVENTS))
+        self.assertNotIn("PostToolUseFailure", events)
 
     def test_edits_and_bash_are_both_gated_before_they_run(self):
         events, _ = hook_commands()

@@ -92,15 +92,26 @@ class SemanticTestCase(unittest.TestCase):
     # -------------------------------------------------------------- rules
 
     BUILTIN_IDS = ["CGEL-COMMENT-1", "CGEL-DEBT-1", "CGEL-IMPACT-1", "CGEL-SECRET-1"]
+    # The split is about ground truth, not importance: IMPACT-1 and SECRET-1
+    # are checkable by searching, so a block is arguable. DEBT-1 and COMMENT-1
+    # are judgements of taste, and blocking on taste at close — with an
+    # ungated ESCALATE as the only exit — is how a lint gate earns itself an
+    # off switch. They still run and still reach the human.
+    BLOCKING_BUILTIN_IDS = ["CGEL-IMPACT-1", "CGEL-SECRET-1"]
+    ADVISORY_BUILTIN_IDS = ["CGEL-COMMENT-1", "CGEL-DEBT-1"]
 
     def test_rules_parsed_with_builtins(self):
         code, out, err = self.cli("rules")
         self.assertEqual(code, 0)
-        self.assertIn("RULES OK — 6 rule(s), 5 blocking", decision_line(out))
+        self.assertIn("RULES OK — 6 rule(s), 3 blocking", decision_line(out))
         self.assertIn("SEC-1 [BLOCKING]", err)
         self.assertIn("STYLE-1", err)
-        self.assertIn("CGEL-IMPACT-1 [BLOCKING]", err)
         self.assertIn("cgel-builtin", err)
+        for rule_id in self.BLOCKING_BUILTIN_IDS:
+            self.assertIn("%s [BLOCKING]" % rule_id, err)
+        for rule_id in self.ADVISORY_BUILTIN_IDS:
+            self.assertIn(rule_id, err)
+            self.assertNotIn("%s [BLOCKING]" % rule_id, err)
 
     def test_builtin_rules_config_off(self):
         self.write(".cgel/config.json", '{"builtin_rules": "off"}')
@@ -110,14 +121,19 @@ class SemanticTestCase(unittest.TestCase):
         self.assertNotIn("CGEL-IMPACT-1", err)
 
     def test_project_rule_with_same_id_replaces_builtin(self):
+        # Override a BLOCKING builtin, not an advisory one: overriding
+        # CGEL-DEBT-1 with `Blocking: no` is now a no-op, so the test would
+        # pass whether or not replacement worked. The host owns its yardstick
+        # — that only means something if it can downgrade a rule that blocks.
         self.write(
             "docs/standards/overrides.md",
-            "## CGEL-DEBT-1 — our own debt policy\nBlocking: no\n",
+            "## CGEL-IMPACT-1 — our own impact policy\nBlocking: no\n",
         )
         code, out, err = self.cli("rules")
         self.assertEqual(code, 0)
-        self.assertIn("RULES OK — 6 rule(s), 4 blocking", decision_line(out))
-        self.assertIn("our own debt policy", err)
+        self.assertIn("RULES OK — 6 rule(s), 2 blocking", decision_line(out))
+        self.assertIn("our own impact policy", err)
+        self.assertNotIn("CGEL-IMPACT-1 [BLOCKING]", err)
 
     # ----------------------------------------------------- frozen trigger
 
@@ -127,12 +143,15 @@ class SemanticTestCase(unittest.TestCase):
         self.assertTrue(requirement["required"])
         self.assertIn("risk.level=high", requirement["reasons"])
         self.assertEqual(
-            requirement["blocking_rule_ids"], self.BUILTIN_IDS + ["SEC-1"]
+            requirement["blocking_rule_ids"],
+            self.BLOCKING_BUILTIN_IDS + ["SEC-1"],
         )
+        for rule_id in self.ADVISORY_BUILTIN_IDS:
+            self.assertNotIn(rule_id, requirement["blocking_rule_ids"])
 
     def test_medium_risk_requires_semantic_via_builtins(self):
         contract = json.loads(json.dumps(CONTRACT_HIGH))
-        contract["risk"] = {"level": "medium"}
+        contract["risk"] = {"level": "medium", "reasons": ["fixture: medium claim"]}
         self.seal(contract)
         requirement = self.sealed_task()["semantic_verification"]
         self.assertTrue(requirement["required"])
@@ -141,7 +160,7 @@ class SemanticTestCase(unittest.TestCase):
 
     def test_low_risk_not_required(self):
         contract = json.loads(json.dumps(CONTRACT_HIGH))
-        contract["risk"] = {"level": "low"}
+        contract["risk"] = {"level": "low", "reasons": ["fixture: low claim, argued"]}
         self.seal(contract)
         self.assertFalse(self.sealed_task()["semantic_verification"]["required"])
 

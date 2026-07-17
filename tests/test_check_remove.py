@@ -23,6 +23,7 @@ CONTRACT = {
         {"id": "AC-1", "description": "x", "required_checks": ["unit-tests"]}
     ],
     "scope": {"allowed": ["src/**"]},
+    "risk": {"level": "low", "reasons": ["fixture: exercises registry freeze"]},
 }
 
 REGISTRY = {

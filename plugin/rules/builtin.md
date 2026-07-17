@@ -5,8 +5,19 @@ Shipped with the plugin and merged into every project's rule set unless
 the same id in `docs/standards/` replaces the built-in — the host owns its
 yardstick. They exist because production work fails the same few ways
 everywhere: half-updated call sites, quietly added debt, comment slop,
-leaked secrets. The verifier judges them; blocking findings stop PASS.
-Honesty: these are EVIDENCE_GATED model judgments, recorded and escalated
+leaked secrets. The verifier judges them all and records every finding.
+
+Two are BLOCKING and two are ADVISORY, and the split is about ground
+truth, not importance. CGEL-IMPACT-1 and CGEL-SECRET-1 can be checked by
+searching: a stale call site is there or it is not, a key shape matches or
+it does not — so a finding is checkable and a block is arguable. CGEL-DEBT-1
+and CGEL-COMMENT-1 are judgements of taste about duplication and comment
+quality. Blocking on taste, at close, with an ungated ESCALATE as the only
+exit, is how a lint gate earns itself a config flag turning it off. They
+still run, are still recorded, and still reach the human — they just do not
+stop a PASS on their own.
+
+Honesty: all four are EVIDENCE_GATED model judgments, recorded and escalated
 to the human on disagreement — not deterministic proofs.
 
 ## CGEL-IMPACT-1 — All impacted code is updated
@@ -21,18 +32,18 @@ Evidence expected: search results showing the old form is gone (or every
 remaining hit justified), and the dependents updated in the same diff.
 
 ## CGEL-DEBT-1 — No new technical debt
-Blocking: yes
+Blocking: no
 Owner: cgel
 Requirement: the change does not duplicate existing logic instead of
 reusing it, does not leave dead or commented-out code, does not paper over
 a root cause with a workaround, and does not widen a public surface
-without need. Debt accepted on purpose is declared in the contract's
-`exceptions` list, never silent.
+without need. Debt accepted on purpose is declared out loud — in the
+iteration's decision, or in the close reason — never silent.
 Evidence expected: reused helpers cited by path; any accepted debt named
-in the contract.
+where a human will read it.
 
 ## CGEL-COMMENT-1 — Comments earn their place
-Blocking: yes
+Blocking: no
 Owner: cgel
 Requirement: comments explain WHY — constraints, invariants, non-obvious
 choices — and never narrate what the code already says. No leftover

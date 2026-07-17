@@ -14,6 +14,7 @@ CONTRACT = {
         {"id": "AC-1", "description": "widget works", "required_checks": ["unit-tests"]}
     ],
     "scope": {"allowed": ["src/**", "tests/**"], "forbidden": ["src/legacy/**"]},
+    "risk": {"level": "low", "reasons": ["fixture: exercises the edit gate"]},
 }
 
 

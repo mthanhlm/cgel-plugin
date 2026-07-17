@@ -281,13 +281,19 @@ def cmd_summary(args):
 
     c = C.normalize_contract(contract)
     digest = C.contract_digest(contract)
-    seal_mode = "human" if c["protected_capabilities"] else "auto"
 
+    claimed = (contract.get("risk") or {}).get("level")
+    floored = c["risk"]["level"] != claimed
     lines = [
         "Task: %s (%s)" % (c["task"]["id"], c["task"]["type"]),
         "Goal: %s" % c["task"]["goal"],
-        "Risk: %s" % c["risk"]["level"],
+        "Risk: %s%s"
+        % (
+            c["risk"]["level"],
+            " (raised from '%s' — see below)" % claimed if floored else "",
+        ),
     ]
+    lines += ["  - %s" % reason for reason in c["risk"]["reasons"]]
     lines += _intent_review_lines(contract)
     lines.append("Allowed scope:")
     lines += ["  - %s" % p for p in c["scope"]["allowed"]]
@@ -304,11 +310,47 @@ def cmd_summary(args):
     lines.append("Budgets: %d iterations, %d replans" % (
         c["budgets"]["max_iterations"], c["budgets"]["max_replans"]
     ))
-    lines.append("Exceptions: %s" % (json.dumps(c["exceptions"]) if c["exceptions"] else "none"))
+    if contract.get("exceptions"):
+        # Retired. It was in the schema, printed here at the seal ceremony,
+        # and named by CGEL-DEBT-1 as the only legitimate way to accept debt
+        # — and read by nothing: blocking_count consulted only the rules file
+        # and the verifier was never told. A user approved a waiver that had
+        # no effect. Warn rather than ignore: a contract still carrying it
+        # was written against a promise that never held.
+        lines.append(
+            "WARNING: `exceptions` is retired and was never read by anything "
+            "— remove it. To accept a rule's finding, say so in the "
+            "iteration's decision and close honestly."
+        )
+    # The verdict, on the screen where the user approves the digest.
+    # _semantic_requirement was computed at seal and NOWHERE else, so the
+    # summary said "Risk: low" and never mentioned that low means nothing
+    # will grade this work. A user cannot consent to a bar they were not
+    # shown. Same function the seal freezes, so the screen and the seal
+    # cannot disagree.
+    semantic = _semantic_requirement(contract, C.load_semantic_rules(root))
+    if semantic["required"]:
+        lines.append(
+            "Semantic verification: REQUIRED (%s)" % "; ".join(semantic["reasons"])
+        )
+        lines.append(
+            "  the read-only verifier will judge this change against: %s"
+            % ", ".join(semantic["blocking_rule_ids"])
+        )
+        lines.append("  a blocking finding stops PASS.")
+    else:
+        lines.append(
+            "Semantic verification: NOT REQUIRED at risk.level=%s — no rule "
+            "will judge this change and no finding can stop PASS. Only the "
+            "registered checks grade it." % c["risk"]["level"]
+        )
     for line in lines:
         print(line, file=sys.stderr)
 
-    return ok("SUMMARY %s digest=%s seal_mode=%s" % (c["task"]["id"], digest, seal_mode))
+    return ok(
+        "SUMMARY %s digest=%s semantic=%s"
+        % (c["task"]["id"], digest, "required" if semantic["required"] else "none")
+    )
 
 
 def _semantic_requirement(contract, rules):
@@ -463,6 +505,12 @@ def cmd_seal(args):
     store = C.repo_state_dir(root)
     task_dir = os.path.join(store, task_id)
     if not reseal:
+        # Say it at the point of no return, not only at the two commands the
+        # user may never have run. `_draft_warnings` fired at validate and
+        # summary — both optional, both discardable — and stayed silent at
+        # the one irreversible act.
+        for warning in _draft_warnings(root, contract):
+            print("cgel: warn: %s" % warning, file=sys.stderr)
         rot_error = _rotate_closed_task_dir(task_dir, task_id)
         if rot_error is not None:
             return fail(
@@ -520,7 +568,6 @@ def cmd_seal(args):
             file=sys.stderr,
         )
 
-    seal_mode = "human" if c["protected_capabilities"] else "auto"
     bundle = C.governance_bundle(root)
     workspace = C.workspace_snapshot(root)
     semantic = _semantic_requirement(contract, C.load_semantic_rules(root))
@@ -530,7 +577,6 @@ def cmd_seal(args):
             "task_id": task_id,
             "contract": c,
             "contract_digest": digest,
-            "seal_mode": seal_mode,
             "sealed_at": C.utc_now(),
             "dirty_ack": bool(dirty),
             "governance_bundle": bundle,
@@ -574,11 +620,10 @@ def cmd_seal(args):
             % (len(others), ", ".join(o["task_id"] for o in others))
         )
     return ok(
-        "SEAL OK — %s digest=%s mode=%s governance=%s%s"
+        "SEAL OK — %s digest=%s governance=%s%s"
         % (
             task_id,
             digest,
-            seal_mode,
             bundle["digest"],
             " (reseal)" if reseal else "",
         ),
@@ -1619,17 +1664,24 @@ def cmd_attest(args):
     task = resolve_task_or_fail(root, args.task, "ATTEST")
     if task is None:
         return 1
+    # Check the policy BEFORE writing: a refusal that still leaves the
+    # artifact on disk is not a refusal. `attestation.persistence` advertised
+    # an enum — local | ci-artifact | pr-comment | repository — of which only
+    # `local` was ever implemented. A config key that accepts four values and
+    # honours one is a control the user is shown that does nothing; reject the
+    # three that do not exist rather than accept them and print a footnote.
+    policy = (C.read_config(root).get("attestation") or {}).get("persistence")
+    if policy is not None and policy != "local":
+        return fail(
+            "ATTEST DENIED — unknown attestation.persistence '%s'" % policy,
+            "cgel: the only implemented policy is `local` (the attestation is "
+            "written to the runtime state store, never committed). Remove the "
+            "key from .cgel/config.json, or set it to `local`.",
+        )
     attestation = _build_attestation(root, task)
     tdir = C.task_dir(root, task["task_id"])
     path = os.path.join(tdir, "attestation", "attestation.json")
     C.atomic_write_json(path, attestation)
-    policy = (C.read_config(root).get("attestation") or {}).get("persistence", "local")
-    if policy != "local":
-        print(
-            "cgel: attestation policy '%s' is not implemented in the MVP — "
-            "wrote local only. `repository` is never a default (D-29)." % policy,
-            file=sys.stderr,
-        )
     return ok("ATTEST OK — %s" % path)
 
 
@@ -2185,7 +2237,10 @@ def _dispatch():
     )
     p_unblock.add_argument("--add-iterations", dest="add_iterations", type=int, default=0)
     p_unblock.add_argument("--add-replans", dest="add_replans", type=int, default=0)
-    p_unblock.add_argument("--reason", default="")
+    # `--reason` used to be accepted here and read by nothing: the user typed
+    # a justification into a flag that went nowhere, and an approval question
+    # quoting it approved a string with no effect. Rejecting it out loud beats
+    # accepting it silently. (`cgel close --reason` is real and unaffected.)
     _add_task_arg(p_unblock)
 
     p_check = sub.add_parser(

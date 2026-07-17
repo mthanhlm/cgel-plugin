@@ -334,11 +334,23 @@ class LoopTestCase(LoopFixture):
     #
     # command_guard and approval_gate root at the session's directory by
     # design (rooting a Bash hook by scanning below cwd means a walk on every
-    # Bash call, ambiguous with two projects). A session above a project is
-    # therefore ungated at the Bash level, and the only honest thing to do is
-    # say so once, at the top.
+    # Bash call, ambiguous with two projects). A session above a project sits
+    # in a directory that is not a project, so no Bash-level guard can judge
+    # the projects below on that session's behalf. The notice is the floor:
+    # say it once, at the top.
+    #
+    # What the notice must NOT say is that the guards are therefore inert.
+    # They are not. An approval-gated verb here fails closed — a verb we
+    # cannot root is a verb we cannot gate — so "nothing is gated" read as a
+    # promise that a seal would simply run, and a reader who believed it met a
+    # deny that blamed a `-C` they had never typed. Both halves of the notice
+    # are asserted below: edits underneath are still gated, and a gated verb
+    # DENIES. See test_approvals.py for the gate side.
+    #
+    # This test's expected VALUE changed with the notice's wording (D-48); its
+    # premise did not, so it was updated rather than deleted.
 
-    def test_session_above_a_project_says_nothing_here_is_gated(self):
+    def test_session_above_a_project_says_its_own_directory_is_not_gated(self):
         # A private monorepo, not dirname(self.repo): that is /tmp, which
         # collects every other test's project and would make this assert on
         # whatever else ran today.
@@ -353,9 +365,17 @@ class LoopTestCase(LoopFixture):
             )
             self.assertEqual(code, 0, err)
             context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-            self.assertIn("nothing in this session is gated", context)
+            self.assertIn("this session's own directory is not gated", context)
             self.assertIn(os.path.realpath(project), context)
             self.assertIn("cgel -C", context)
+            # The edits-below promise must survive: it is the whole point of
+            # rooting the edit gate at the file.
+            self.assertIn("still gated and recorded", context)
+            # And the notice must not resurrect the false half: a gated verb
+            # here denies, so promising it is "not active" sends the reader to
+            # a deny they were told could not happen.
+            self.assertIn("DENIED", context)
+            self.assertNotIn("are NOT active here", context)
         finally:
             shutil.rmtree(mono, ignore_errors=True)
 

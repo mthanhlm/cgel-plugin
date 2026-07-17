@@ -74,13 +74,19 @@ design, debate rounds v0.1→v1.0). All four MVP phases are implemented:
 
 The file-level rows (the edit gate, the recorder) root at the **file being touched**, so they hold for any edit inside a project — including from a session opened above one.
 
-The Bash-level rows (the git guard, the approval gate) root at the **session's working directory**. Open a session above your projects — at a monorepo root, say — and those rows do not hold for that session: nothing is watching the command line. This is a deliberate trade: rooting a Bash hook by scanning for projects underneath would mean a directory walk on every Bash call, and would be ambiguous the moment a monorepo holds two. Instead, `SessionStart` says so on the way in, naming the projects it found and how to address one:
+The Bash-level rows (the git guard, the approval gate) root at the **session's working directory**. Open a session above your projects — at a monorepo root, say — and that directory is not a project, so those rows cannot tell which project a command addresses. This is a deliberate trade: rooting a Bash hook by scanning for projects underneath would mean a directory walk on every Bash call, and would be ambiguous the moment a monorepo holds two.
+
+What follows from it is not "nothing is watching". The git guard does not run. The approval gate does the opposite of standing aside: an approval-gated verb it cannot root is **denied**, because a verb we cannot root is a verb we cannot gate — standing aside there would make `cd project && cgel seal ...` the bypass. The same applies inside a project: `cd elsewhere && cgel seal ...` is denied rather than rooted at the session's project, which would file the approval against the wrong repository's ledger.
+
+So `SessionStart` says so on the way in, naming the projects it found and how to address one:
 
 ```
 cgel -C <project> status
 ```
 
-`-C` addresses a project from anywhere and is gated exactly as if you were standing inside it.
+`-C` addresses a project from anywhere and is gated exactly as if you were standing inside it. It is the exit for every *rooting* refusal — an absolute path needs no `cd`, and the gate reads the flag off the gated invocation itself.
+
+The gate decides only on lines it can read exactly, and it decides **per invocation**: each gated `cgel` command on a line finds its own approval and is governed by the project *it* names (two seals on one line need two recorded approvals — one cannot ride on the other's). A line it cannot read exactly — a redirection, a substitution, a shell fed from a pipe, a `(...)`/`{...}` group — is never interpreted: if it looks like it carries a gated verb it is refused outright, and the exit is different there: run the gated verb as a plain single command on its own line.
 
 ## Approval by question
 
@@ -390,11 +396,15 @@ tasks are open). `validate`/`summary`/`seal` take `--contract <path>` for
 parallel drafts.
 
 Every verb also takes a top-level `cgel -C <dir>` (`--directory`), which
-addresses the project at `<dir>` instead of the current directory — useful
-from a monorepo root, where the Bash-level guards are not active (see
-[the precondition](#what-phase-0-enforces)). It names a directory, never a
-file, and the approval gate treats `cgel -C <dir> seal ...` exactly as it
-treats `cgel seal ...` from inside.
+addresses the project at `<dir>` instead of the current directory. It names a
+directory, never a file, and the approval gate treats `cgel -C <dir> seal ...`
+exactly as it treats `cgel seal ...` from inside.
+
+It is also the *only* way to run a gated verb against a project the session is
+not standing in. `cd <dir> && cgel seal ...` is denied: this gate roots at the
+session's directory and does not model the shell, so it cannot see where the
+`cd` left the command (see [the precondition](#what-phase-0-enforces)). Use an
+absolute path — `cgel -C /path/to/project seal ...` — and no `cd` is needed.
 
 | Command | What it does |
 |---|---|
@@ -511,7 +521,7 @@ conflicts. MCP interface for the control plane: decide with Phase 1 usage
 data.
 
 Design record: [ARCHITECT.md](ARCHITECT.md) — the signed-off CGEL v1.0
-consolidated architecture, plus the post-v1.0 amendments D-35..D-47 that
+consolidated architecture, plus the post-v1.0 amendments D-35..D-48 that
 record every change since. [ROADMAP.md](ROADMAP.md) holds the parts that
 were designed and never built — it is a wish list, kept apart from the
 design record on purpose.

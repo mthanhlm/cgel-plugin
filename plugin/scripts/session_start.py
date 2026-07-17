@@ -219,13 +219,20 @@ def _projects_below(cwd, max_depth=3, limit=5, max_dirs=2000):
 def monorepo_notice(projects):
     lines = [
         "CGEL notice — this session is rooted above %d CGEL project%s, so "
-        "nothing in this session is gated."
+        "this session's own directory is not gated."
         % (len(projects), "" if len(projects) == 1 else "s"),
         "",
         "The edit gate and the recorder root at the FILE, so edits inside a "
-        "project below are still gated and recorded. The Bash-level guards "
-        "(git commands, approval-gated cgel verbs) root at the session's "
-        "directory and are NOT active here.",
+        "project below are still gated and recorded.",
+        "",
+        "The Bash-level guards root at the session's directory, which is not "
+        "a project, so they cannot tell which project a command addresses. "
+        "The git guard therefore does not run here. An approval-gated cgel "
+        "verb (`seal`, `unblock`, `check remove`, …) is NOT waved through: it "
+        "is DENIED, because a verb we cannot root is a verb we cannot gate. "
+        "Address the project and it works normally:",
+        "",
+        "  cgel -C %s seal <TASK-ID> --digest <sha256:...>" % projects[0],
         "",
         "Projects found:",
     ]
@@ -265,7 +272,10 @@ def main():
     if not repo_root:
         # A session opened ABOVE a project (a monorepo root) is the one place
         # the Bash-rooted gates cannot help: command_guard and approval_gate
-        # root at cwd by design, so nothing here is guarding those projects.
+        # root at cwd by design, and cwd is not a project, so they cannot tell
+        # which project a command addresses. They do not therefore wave it
+        # through — an approval-gated verb DENIES here (D-48) — but nothing at
+        # the Bash level is judging these projects on this session's behalf.
         # Saying so once, at the top of the session, is the floor.
         below = _projects_below(cwd)
         if below:

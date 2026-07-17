@@ -366,14 +366,17 @@ def gh_parts(argv):
 # `-C <root>` flag is planned for the CLI; strip it here so the approval
 # gate's verb detection does not silently stop matching the day it lands".
 #
-# That day arrived. The flag shipped, and the gate did not use this: verb
-# detection must be TOTAL, and analyze() returns argv=None for a line it
-# cannot resolve, so approval_gate needs a raw-text anchor regardless. Its
-# `_CGEL` prefix is that anchor and it tolerates the flag directly, which
-# left this as a second, unused implementation of a solved problem — and a
-# WRONG one: it stripped `-C <val>` but not `--directory <val>`, so
-# `cgel --directory /repo seal T1` returned verb="/repo". A helper nothing
-# calls, whose docstring promises a future that has already happened, and
-# which is wrong for the flag it names, is the exact shape D-46 deleted five
-# of. If a caller ever needs argv-level cgel parsing, write it then, against
-# the flags that exist then.
+# When the flag first shipped, the gate did not use this: it detected verbs
+# with a raw-text anchor instead, and this sat as a second, unused
+# implementation of a solved problem — and a WRONG one: it stripped
+# `-C <val>` but not `--directory <val>`, so `cgel --directory /repo seal T1`
+# returned verb="/repo". A helper nothing calls, whose docstring promises a
+# future that has already happened, and which is wrong for the flag it
+# names, is the exact shape D-46 deleted five of. The instruction left here
+# was: if a caller ever needs argv-level cgel parsing, write it then, in the
+# caller, against the flags that exist then.
+#
+# D-48 did exactly that. approval_gate now carries its own `_cgel_parts`,
+# written against the flags as shipped (all four `-C` spellings), and the
+# raw-text anchors are gone — text there can only refuse a line this module
+# cannot resolve, never decide one. This helper stays deleted.

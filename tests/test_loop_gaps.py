@@ -253,7 +253,7 @@ class GovernanceTaskCanFinish(GapTestCase):
         self.assertEqual(code, 0, err)
         code, out, err = self.cli("iterate", "decide", "ADVANCE")
         self.assertEqual(code, 0, out + err)
-        code, out, err = self.cli("close", "--as", "PASS")
+        code, out, err = self.cli("close", "--as", "PASS", "--reason", "fixture close")
         self.assertEqual(code, 0, out + err)
         self.assertIn("CLOSE OK", decision_line(out))
 

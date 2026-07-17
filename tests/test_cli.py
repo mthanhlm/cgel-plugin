@@ -20,13 +20,21 @@ CONTRACT = {
 }
 
 
-class CliTestCase(unittest.TestCase):
+class CliFixture(unittest.TestCase):
+    """Fixture only — no tests, so subclasses do not re-run each other's."""
+
     def setUp(self):
         self.repo = tempfile.mkdtemp(prefix="cgel-repo-")
         self.state = tempfile.mkdtemp(prefix="cgel-state-")
         os.makedirs(os.path.join(self.repo, ".cgel"))
         os.makedirs(os.path.join(self.repo, ".task"))
         self.env = {"CGEL_STATE_DIR": self.state}
+        # seal refuses a criterion naming an unregistered check: the
+        # registry freezes at seal, so it could never produce evidence.
+        with open(
+            os.path.join(self.repo, ".cgel", "registry.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump({"checks": {"unit-tests": {"command": "true"}}}, fh)
 
     def tearDown(self):
         shutil.rmtree(self.repo, ignore_errors=True)
@@ -46,6 +54,8 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(code, 0, err)
         return decision_line(out).split("digest=")[1].split()[0]
 
+
+class CliTestCase(CliFixture):
     # ------------------------------------------------------------ tests
 
     def test_validate_fail_missing_goal(self):
@@ -336,10 +346,10 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("TASK-C1", decision_line(out))
         self.assertIn("TASK-C2", decision_line(out))
         # an unaddressed verb must refuse rather than guess
-        code, out, _ = self.cli("close", "--as", "ABORT")
+        code, out, _ = self.cli("close", "--as", "ABORT", "--reason", "fixture close")
         self.assertEqual(code, 1)
         self.assertIn("--task", decision_line(out))
-        code, out, _ = self.cli("close", "--as", "ABORT", "--task", "TASK-C2")
+        code, out, _ = self.cli("close", "--as", "ABORT", "--reason", "fixture close", "--task", "TASK-C2")
         self.assertEqual(code, 0, out)
         code, out, _ = self.cli("status")
         self.assertIn("STATUS SEALED task=TASK-C1", decision_line(out))
@@ -383,7 +393,7 @@ class CliTestCase(unittest.TestCase):
         self.cli("seal", "TASK-C1", "--digest", digest)
         _, out, _ = self.cli("status")
         self.assertIn("STATUS SEALED task=TASK-C1", decision_line(out))
-        self.cli("close", "--as", "ABORT")
+        self.cli("close", "--as", "ABORT", "--reason", "fixture close")
         _, out, _ = self.cli("status")
         # close removes the matching draft: a stale contract.json squatting
         # in .task/ repeatedly blocked the next task in real use
@@ -445,7 +455,7 @@ class CliTestCase(unittest.TestCase):
         self.write_contract(CONTRACT)
         digest = self.summary_digest()
         self.cli("seal", "TASK-C1", "--digest", digest)
-        self.cli("close", "--as", "ABORT")
+        self.cli("close", "--as", "ABORT", "--reason", "fixture close")
         store = os.path.join(self.state, os.listdir(self.state)[0], "TASK-C1")
         with open(os.path.join(store, "state.json"), "w", encoding="utf-8") as fh:
             fh.write("[]")  # valid JSON, wrong shape
@@ -461,7 +471,7 @@ class CliTestCase(unittest.TestCase):
         self.write_contract(CONTRACT)
         digest = self.summary_digest()
         self.cli("seal", "TASK-C1", "--digest", digest)
-        code, out, err = self.cli("close", "--as", "PASS")
+        code, out, err = self.cli("close", "--as", "PASS", "--reason", "fixture close")
         self.assertEqual(code, 1)
         self.assertIn("CLOSE DENIED", decision_line(out))
         self.assertIn("evidence", (decision_line(out) + err).lower())
@@ -502,8 +512,11 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("SEAL OK", decision_line(out))
 
     def test_check_add_list_and_force(self):
+        # `unit-tests` is registered by the fixture (seal now refuses a
+        # criterion naming an unregistered check), so this adds `lint` for
+        # the happy path and keeps unit-tests for the duplicate/--force half.
         code, out, _ = self.cli(
-            "check", "add", "unit-tests", "--command", "npm test", "--kind", "test"
+            "check", "add", "lint", "--command", "npm run lint", "--kind", "lint"
         )
         self.assertEqual(code, 0)
         self.assertIn("CHECK ADDED", decision_line(out))
@@ -518,7 +531,7 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         code, out, err = self.cli("check", "list")
         self.assertEqual(code, 0)
-        self.assertIn("CHECK LIST — 1 check(s)", decision_line(out))
+        self.assertIn("CHECK LIST — 2 check(s)", decision_line(out))
         self.assertIn("unit-tests: pytest", err)
         with open(os.path.join(self.repo, ".cgel", "registry.json")) as fh:
             registry = json.load(fh)
@@ -544,7 +557,7 @@ class CliTestCase(unittest.TestCase):
         current = os.path.join(self.state, repos[0], "CURRENT")
         with open(current, encoding="utf-8") as fh:
             self.assertEqual(fh.read().strip(), "TASK-C1")
-        self.cli("close", "--as", "ABORT")
+        self.cli("close", "--as", "ABORT", "--reason", "fixture close")
         self.assertFalse(os.path.exists(current))
 
     def test_summary_warns_without_intent_review_on_medium_risk(self):
@@ -594,7 +607,7 @@ class CliTestCase(unittest.TestCase):
             shutil.rmtree(fresh, ignore_errors=True)
 
 
-class ScopeMatchingTestCase(CliTestCase):
+class ScopeMatchingTestCase(CliFixture):
     """Phase C — a scope that does not mean what its author wrote.
 
     Both defects here are silent in the same direction that matters: the

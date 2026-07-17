@@ -18,13 +18,21 @@ CONTRACT = {
 }
 
 
-class GateTestCase(unittest.TestCase):
+class GateFixture(unittest.TestCase):
+    """Fixture only — no tests, so subclasses do not re-run each other's."""
+
     def setUp(self):
         self.repo = tempfile.mkdtemp(prefix="cgel-repo-")
         self.state = tempfile.mkdtemp(prefix="cgel-state-")
         os.makedirs(os.path.join(self.repo, ".cgel"))
         os.makedirs(os.path.join(self.repo, ".task"))
         self.env = {"CGEL_STATE_DIR": self.state}
+        # seal refuses a criterion naming an unregistered check: the
+        # registry freezes at seal, so it could never produce evidence.
+        with open(
+            os.path.join(self.repo, ".cgel", "registry.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump({"checks": {"unit-tests": {"command": "true"}}}, fh)
 
     def tearDown(self):
         shutil.rmtree(self.repo, ignore_errors=True)
@@ -61,6 +69,8 @@ class GateTestCase(unittest.TestCase):
         merged.update(env or {})
         return run_hook("contract_gate.py", payload, env=merged)
 
+
+class GateTestCase(GateFixture):
     # ------------------------------------------------------------ tests
 
     def test_not_a_cgel_project_allows(self):
@@ -138,7 +148,7 @@ class GateTestCase(unittest.TestCase):
     def test_close_shuts_the_gate_again(self):
         self.seal()
         code, out, err = run_cli(
-            ["close", "--as", "ESCALATE"], cwd=self.repo, env=self.env
+            ["close", "--as", "ESCALATE", "--reason", "fixture close"], cwd=self.repo, env=self.env
         )
         self.assertEqual(code, 0, out + err)
         code, _, _ = self.edit("src/app.py")
@@ -181,7 +191,7 @@ class GateTestCase(unittest.TestCase):
             shutil.rmtree(outside, ignore_errors=True)
 
 
-class RootingTestCase(GateTestCase):
+class RootingTestCase(GateFixture):
     """must-fix #5/#6 — the gate roots at the FILE, not at the session.
 
     Ubuntu-only CI cannot see the symlink class of defect unless a test builds

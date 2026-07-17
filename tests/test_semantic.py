@@ -215,7 +215,7 @@ class SemanticTestCase(unittest.TestCase):
     def test_pass_requires_semantic_when_frozen(self):
         self.seal()
         self.cli("verify", "ok-check")
-        code, _, err = self.cli("close", "--as", "PASS")
+        code, _, err = self.cli("close", "--as", "PASS", "--reason", "fixture close")
         self.assertEqual(code, 1)
         self.assertIn("semantic verification required", err)
         self.assertIn("risk.level=high", err)
@@ -225,7 +225,7 @@ class SemanticTestCase(unittest.TestCase):
         self.findings([{"rule_id": "SEC-1", "status": "fail", "reason": "leak"}])
         self.cli("semantic", "record")
         self.cli("verify", "ok-check")
-        code, _, err = self.cli("close", "--as", "PASS")
+        code, _, err = self.cli("close", "--as", "PASS", "--reason", "fixture close")
         self.assertEqual(code, 1)
         self.assertIn("blocking semantic finding", err)
 
@@ -240,7 +240,7 @@ class SemanticTestCase(unittest.TestCase):
         code, out, _ = self.cli("semantic", "record")
         self.assertEqual(code, 0, out)  # non-blocking fail does not block
         self.cli("verify", "ok-check")
-        code, out, err = self.cli("close", "--as", "PASS")
+        code, out, err = self.cli("close", "--as", "PASS", "--reason", "fixture close")
         self.assertEqual(code, 0, out + err)
         self.assertIn("attestation exported", err)
         repos = os.listdir(self.state)
@@ -262,7 +262,7 @@ class SemanticTestCase(unittest.TestCase):
         self.cli("semantic", "record")
         self.write("src/app.py", "print('changed after verifier ran')\n")
         self.cli("verify", "ok-check")  # evidence fresh, semantic stale
-        code, _, err = self.cli("close", "--as", "PASS")
+        code, _, err = self.cli("close", "--as", "PASS", "--reason", "fixture close")
         self.assertEqual(code, 1)
         self.assertIn("semantic findings stale", err)
 

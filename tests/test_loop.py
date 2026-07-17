@@ -36,7 +36,9 @@ REGISTRY = {
 }
 
 
-class LoopTestCase(unittest.TestCase):
+class LoopFixture(unittest.TestCase):
+    """Fixture only — no tests, so subclasses do not re-run each other's."""
+
     def setUp(self):
         self.repo = tempfile.mkdtemp(prefix="cgel-repo-")
         self.state = tempfile.mkdtemp(prefix="cgel-state-")
@@ -82,6 +84,8 @@ class LoopTestCase(unittest.TestCase):
         if n_expected:
             self.assertIn("iteration %d/" % n_expected, decision_line(out))
 
+
+class LoopTestCase(LoopFixture):
     # -------------------------------------------------------- lifecycle
 
     def test_first_iteration_activates(self):
@@ -148,7 +152,25 @@ class LoopTestCase(unittest.TestCase):
         code, out, err = self.cli("iterate", "decide", "RETRY")
         self.assertEqual(code, 1)
         self.assertIn("survived a REPLAN", decision_line(out))
-        self.assertIn("ESCALATE or ABORT", err)
+        # The remedy is copy-pasteable now, not a description of one.
+        self.assertIn('cgel close --as ESCALATE --reason "..."', err)
+
+        # ...and REPLAN closes with it. Guarding only RETRY made the loop
+        # look bounded while leaving the door open: the exit from a refused
+        # RETRY was another REPLAN against the same failure, around until the
+        # replan budget ran out.
+        code, out, err = self.cli("iterate", "decide", "REPLAN")
+        self.assertEqual(code, 1)
+        self.assertIn("survived a REPLAN", decision_line(out))
+        self.assertIn('cgel close --as ESCALATE --reason "..."', err)
+
+        # The override still works — the user can always overrule the guard.
+        code, out, _ = self.cli(
+            "iterate", "decide", "RETRY",
+            "--override-reason", "flaky infra, not the approach",
+            "--approved-by", "user",
+        )
+        self.assertEqual(code, 0, out)
 
     def test_override_with_approver_permits_retry(self):
         self.seal()
@@ -373,6 +395,121 @@ class LoopTestCase(unittest.TestCase):
         code, out, _ = self.cli("audit")
         self.assertEqual(code, 0)
         self.assertIn("chain=intact", decision_line(out))
+
+
+class LoopWedgeTestCase(LoopFixture):
+    """Phase D/AC-6 — the loop must always be able to come to rest.
+
+    A control that cannot be satisfied is not a control; it is a wedge, and
+    the only exit from a wedge is the off switch. That is how a governance
+    gate teaches its user to disable it.
+    """
+
+    def block_task(self, reason):
+        for name in os.listdir(self.state):
+            path = os.path.join(self.state, name, "TASK-L1", "state.json")
+            if os.path.isfile(path):
+                with open(path) as fh:
+                    state = json.load(fh)
+                state["lifecycle_before_block"] = state.get("lifecycle", "ACTIVE")
+                state["lifecycle"] = "BLOCKED"
+                state["blocked_reason"] = reason
+                with open(path, "w") as fh:
+                    json.dump(state, fh)
+
+    def test_rollback_is_legal_while_blocked(self):
+        # The wedge: BLOCKED refused every decision, so a task blocked while
+        # an iteration was open could not close that iteration — and
+        # `iterate open` refuses while BLOCKED, so nothing could move at all.
+        self.seal()
+        self.open_iteration(1)
+        self.block_task("sealed-guidebook-bundle-changed")
+        code, out, err = self.cli("iterate", "decide", "ROLLBACK_ITERATION")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("ROLLBACK_ITERATION", decision_line(out))
+
+    def test_advance_stays_refused_while_blocked_by_a_moved_yardstick(self):
+        # Evidence measured against the SEALED digest is not evidence about
+        # what is here now.
+        self.seal()
+        self.open_iteration(1)
+        self.cli("verify", "ok-check")
+        self.block_task("sealed-guidebook-bundle-changed")
+        code, out, err = self.cli("iterate", "decide", "ADVANCE")
+        self.assertEqual(code, 1)
+        self.assertIn("BLOCKED", decision_line(out))
+        self.assertIn("ROLLBACK_ITERATION", err)
+        self.assertIn("close --as ESCALATE", err)
+
+    def test_advance_is_legal_while_blocked_on_an_exhausted_budget(self):
+        # The user widened the budget; the yardstick never moved.
+        self.seal()
+        self.cli(
+            "iterate", "open", "--intended-change", "poke", "--expect", "ok-check"
+        )
+        self.cli("verify", "ok-check")
+        self.block_task("budget-exhausted-iterations")
+        code, out, err = self.cli("iterate", "decide", "ADVANCE")
+        self.assertEqual(code, 0, out + err)
+
+    def test_a_governance_task_does_not_freeze_itself(self):
+        # A task the user approved WITH modify-verification-registry was
+        # refused by its own seal: the freeze counted every open task, so the
+        # one task allowed to change the registry could not, and its only
+        # exit was to close unfinished.
+        contract = json.loads(json.dumps(CONTRACT))
+        contract["task"]["id"] = "TASK-L1"
+        contract["protected_capabilities"] = ["modify-verification-registry"]
+        contract["acceptance_criteria"] = [
+            {"id": "AC-1", "description": "registry gains a check",
+             "required_checks": []}
+        ]
+        contract["risk"] = {"level": "high", "reasons": ["changes the measure"]}
+        self.seal(contract)
+        # not `true`: the check canary refuses a command that passes with no
+        # project present, which is the two-sided doctor doing its job.
+        code, out, err = self.cli(
+            "check", "add", "new-check",
+            "--command", "test -f src/app.py", "--kind", "test",
+        )
+        self.assertEqual(code, 0, out + err)
+
+    def test_another_open_task_still_freezes_the_registry_and_names_them_all(self):
+        self.seal()
+        code, out, err = self.cli(
+            "check", "add", "late", "--command", "test -f src/app.py", "--kind", "test"
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("CHECK DENIED", decision_line(out))
+        self.assertIn("TASK-L1", decision_line(out))
+        self.assertIn("modify-verification-registry", err)
+
+    def test_seal_refuses_a_criterion_naming_an_unregistered_check(self):
+        # The registry freezes AT seal, so such a criterion can never produce
+        # evidence: PASS was structurally impossible from the moment of seal,
+        # and nothing said so until close.
+        contract = json.loads(json.dumps(CONTRACT))
+        contract["acceptance_criteria"] = [
+            {"id": "AC-1", "description": "x", "required_checks": ["never-registered"]}
+        ]
+        self.write_json(".task/contract.json", contract)
+        code, out, err = self.cli("summary")
+        digest = decision_line(out).split("digest=")[1].split()[0]
+        code, out, err = self.cli("seal", "TASK-L1", "--digest", digest)
+        self.assertEqual(code, 1)
+        self.assertIn("not registered", decision_line(out))
+        self.assertIn("never-registered", decision_line(out))
+        self.assertIn("ok-check", err)  # names what IS registered
+        self.assertIn("check add", err)
+
+    def test_a_criterion_with_no_checks_still_seals(self):
+        # required_checks: [] is the governance-task shape. It cannot PASS,
+        # which is by design, and is not the seal's business to refuse.
+        contract = json.loads(json.dumps(CONTRACT))
+        contract["acceptance_criteria"] = [
+            {"id": "AC-1", "description": "x", "required_checks": []}
+        ]
+        self.seal(contract)
 
 
 class ProjectScanTestCase(unittest.TestCase):

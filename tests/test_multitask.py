@@ -194,7 +194,7 @@ class MultiTaskTestCase(unittest.TestCase):
         for args in (
             ("verify", "ok-check"),
             ("iterate", "open", "--change", "x"),
-            ("close", "--as", "ABORT"),
+            ("close", "--as", "ABORT", "--reason", "fixture close"),
             ("audit",),
         ):
             code, out, _ = self.cli(*args)
@@ -300,7 +300,7 @@ class MultiTaskTestCase(unittest.TestCase):
         digest = self.seal(contract)
         self.cli("iterate", "open", "--change", "a", "--expect", "ok-check")
         self.cli("iterate", "decide", "ADVANCE", "--verify")
-        code, out, _ = self.cli("close", "--as", "ABORT")
+        code, out, _ = self.cli("close", "--as", "ABORT", "--reason", "fixture close")
         self.assertEqual(code, 0)
         self.assertFalse(
             os.path.isfile(os.path.join(self.repo, ".task", "contract.json"))

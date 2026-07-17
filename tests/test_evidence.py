@@ -413,6 +413,17 @@ class CloseSymmetryTestCase(EvidenceFixture):
     one with no record at all.
     """
 
+    @property
+    def C(self):
+        import sys
+
+        from hookrunner import SCRIPTS_DIR
+
+        sys.path.insert(0, SCRIPTS_DIR)
+        import cgel_common
+
+        return cgel_common
+
     def close(self, status, reason="a fixture reason"):
         return self.cli("close", "--as", status, "--reason", reason)
 
@@ -503,12 +514,35 @@ class CloseSymmetryTestCase(EvidenceFixture):
         # this task's acceptance criteria; recorded rather than widened here.
 
     def test_the_close_record_is_inert_to_the_edit_counters(self):
-        # Every EVENTS_FILE reader filters on type. If one did not, the close
-        # record would read as an edit and mark its own evidence stale.
+        """Every EVENTS_FILE reader filters on type. If one did not, the close
+        record would read as an edit and mark evidence stale.
+
+        Written first as "close --as PASS exits 0" — which proves nothing:
+        _pass_problems runs BEFORE the close record is appended, so the record
+        does not exist when that assertion is evaluated, and the test passed
+        whether or not any reader filtered on type. The counters have to be
+        asked directly, after the record exists.
+        """
         self.seal()
         self.cli("verify", "ok-check")
+        tdir = self.task_store()
+        before_count = self.C.count_edit_events(tdir)
+        before_paths = self.C.edit_event_paths(tdir)
+
         code, out, err = self.close("PASS", "done")
         self.assertEqual(code, 0, out + err)
+
+        events = [
+            json.loads(l)
+            for l in open(os.path.join(tdir, "events.jsonl"))
+            if l.strip()
+        ]
+        self.assertTrue(
+            any(e.get("type") == "close" for e in events),
+            "no close record was appended — this test would be vacuous",
+        )
+        self.assertEqual(self.C.count_edit_events(tdir), before_count)
+        self.assertEqual(self.C.edit_event_paths(tdir), before_paths)
 
     def test_close_prints_one_verbatim_sentence_last_before_the_decision(self):
         self.seal()
@@ -546,6 +580,255 @@ class CloseSymmetryTestCase(EvidenceFixture):
         sentence = err.splitlines()[err.splitlines().index(marker) + 1]
         self.assertLess(len(sentence), 700)
         self.assertIn("...", sentence)
+
+
+class BundleSchemaTestCase(EvidenceFixture):
+    """AC-8 — the measure is versioned, so upgrading moves no open seal.
+
+    A seal is a promise about a SPECIFIC measure. Improving the measure and
+    applying it retroactively would move every open task's digest on upgrade
+    — a repo-wide BLOCKED the user did nothing to earn, on a release whose
+    whole thesis is that the table is true.
+    """
+
+    @property
+    def C(self):
+        import sys
+
+        from hookrunner import SCRIPTS_DIR
+
+        sys.path.insert(0, SCRIPTS_DIR)
+        import cgel_common
+
+        return cgel_common
+
+    def bundle(self, **kw):
+        return self.C.governance_bundle(self.repo, **kw)
+
+    def write_settings(self, permissions, other=1):
+        path = os.path.join(self.repo, ".claude", "settings.local.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump({"permissions": permissions, "other": other}, fh)
+
+    def test_a_new_bundle_records_its_schema(self):
+        self.assertEqual(self.bundle()["schema"], 2)
+
+    def test_audit_discloses_both_carve_outs_too(self):
+        # cmd_audit asserts the sealed-bundle claim, so it owes the same two
+        # exemptions the seal screen does. It disclosed only bundle_exclude:
+        # the pass-8 defect, relocated one surface over.
+        self.write_settings({"allow": ["Bash(ls)"]})
+        self.write_json(".task/contract.json", CONTRACT)
+        code, out, err = self.cli("summary")
+        digest = decision_line(out).split("digest=")[1].split()[0]
+        self.cli("seal", "TASK-E1", "--digest", digest)
+        self.cli("verify", "ok-check")
+        code, out, err = self.cli("audit")
+        self.assertEqual(code, 0, err)
+        self.assertIn("not measured by design", err)
+        self.assertIn(".claude/settings.local.json", err)
+
+    def test_a_truncated_exclusion_list_says_it_is_truncated(self):
+        # A count of N printed over a list of 5 with no tell drops the
+        # remainder silently — a disclosure that hides part of what it
+        # discloses is not one. Exercised through the real surface: bin/cgel
+        # has no .py suffix and is not importable, and the CLI's output is
+        # the thing being claimed anyway.
+        skills = os.path.join(self.repo, ".claude", "skills")
+        os.makedirs(skills)
+        for i in range(9):
+            with open(os.path.join(skills, "s%d.md" % i), "w") as fh:
+                fh.write("# skill %d\n" % i)
+        with open(os.path.join(self.repo, ".cgel", "config.json"), "w") as fh:
+            json.dump({"bundle_exclude": [".claude/skills/**"]}, fh)
+        self.write_json(".task/contract.json", CONTRACT)
+        code, out, err = self.cli("summary")
+        digest = decision_line(out).split("digest=")[1].split()[0]
+        code, out, err = self.cli("seal", "TASK-E1", "--digest", digest)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("9 governance file(s) are EXCLUDED", err)
+        self.assertIn("(+4 more)", err)
+
+    def test_seal_discloses_the_projection_where_it_makes_the_claim(self):
+        """The seal screen says "changing one moves the task to BLOCKED" over
+        the member count — and settings.local.json IS a member, projected
+        rather than excluded, so its most frequent change moves nothing.
+
+        The README row was qualified first and this line was not, which is
+        the same claim standing unqualified at the one screen the user reads
+        while deciding. The sibling carve-out (bundle_exclude) was already
+        disclosed here, and a screen that names one of two exemptions reads
+        as if there were one.
+        """
+        self.write_settings({"allow": ["Bash(ls)"]})
+        self.write_json(".task/contract.json", CONTRACT)
+        code, out, err = self.cli("summary")
+        self.assertEqual(code, 0, err)
+        digest = decision_line(out).split("digest=")[1].split()[0]
+        code, out, err = self.cli("seal", "TASK-E1", "--digest", digest)
+        self.assertEqual(code, 0, out + err)
+        self.assertNotIn("Changing any of them", err)
+        self.assertIn("not measured, by design", err)
+        self.assertIn(".claude/settings.local.json", err)
+        self.assertIn("permissions", err)
+
+    def test_schema_1_is_unchanged_by_the_v2_projection(self):
+        # The upgrade-safety property. If this drifts, every 0.12.0 seal in
+        # the world goes BLOCKED on upgrade.
+        self.write_settings({"allow": ["Bash(ls)"]})
+        before = self.bundle(schema=1)["digest"]
+        self.write_settings({"allow": ["Bash(ls)", "Bash(git status)"]})
+        after = self.bundle(schema=1)["digest"]
+        self.assertNotEqual(before, after)  # v1 measured permissions; it still does
+
+    def test_schema_2_does_not_measure_the_permissions_the_user_edits(self):
+        # The harness rewrites `permissions` every time the user approves a
+        # tool, so measuring it meant the user's own approval BLOCKED every
+        # open task — which teaches them the block is noise.
+        self.write_settings({"allow": ["Bash(ls)"]})
+        before = self.bundle()["digest"]
+        self.write_settings({"allow": ["Bash(ls)", "Bash(git status)"]})
+        self.assertEqual(self.bundle()["digest"], before)
+
+    def test_schema_2_still_measures_the_rest_of_that_file(self):
+        self.write_settings({"allow": []}, other=1)
+        before = self.bundle()["digest"]
+        self.write_settings({"allow": []}, other=2)
+        self.assertNotEqual(self.bundle()["digest"], before)
+
+    def test_a_malformed_member_is_measured_whole_not_skipped(self):
+        path = os.path.join(self.repo, ".claude", "settings.local.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write("{not json")
+        before = self.bundle()["digest"]
+        with open(path, "w") as fh:
+            fh.write("{still not json")
+        self.assertNotEqual(self.bundle()["digest"], before)
+
+    @unittest.skipIf(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        "root reads through mode 000, so the unreadable case cannot be staged",
+    )
+    def test_an_unreadable_member_is_recorded_not_dropped(self):
+        """sha256_file returns None for a member it cannot read, and dropping
+        it REMOVED it from the measure: chmod 000 on a governance file took
+        that file out of the bundle without moving the digest.
+
+        Written first with the assertion behind `if members.get(...) is not
+        None`, which is False in exactly the buggy case — the test passed
+        whether or not the fix existed. A guard that cannot fail is not a
+        guard, so this now stages the condition and asserts unconditionally,
+        and skips outright where the condition cannot be staged rather than
+        pretending to cover it.
+        """
+        path = os.path.join(self.repo, ".cgel", "registry.json")
+        os.chmod(path, 0o000)
+        try:
+            with open(path):  # if this succeeds the premise does not hold
+                self.skipTest("this filesystem ignores mode 000")
+        except PermissionError:
+            pass
+        try:
+            members = {m["path"]: m["digest"] for m in self.bundle()["members"]}
+            self.assertIn(".cgel/registry.json", members)
+            self.assertEqual(members[".cgel/registry.json"], "unreadable")
+        finally:
+            os.chmod(path, 0o644)
+
+    def test_an_open_v1_seal_is_not_blocked_by_the_upgrade(self):
+        # End to end: seal (recording schema 2 today), then rewrite the state
+        # to look like a pre-0.13 seal with no schema, and confirm the task
+        # stays healthy rather than BLOCKED.
+        self.write_settings({"allow": ["Bash(ls)"]})
+        self.seal()
+        sealed_path = os.path.join(self.task_store(), "sealed_task.json")
+        with open(sealed_path) as fh:
+            sealed = json.load(fh)
+        v1 = self.bundle(schema=1)
+        sealed["governance_bundle"] = {"digest": v1["digest"], "members": v1["members"]}
+        with open(sealed_path, "w") as fh:
+            json.dump(sealed, fh)
+        code, out, err = self.cli("verify", "ok-check")
+        self.assertEqual(code, 0, out + err)
+        code, out, _ = self.cli("status")
+        self.assertNotIn("BLOCKED", decision_line(out))
+
+    def test_a_same_size_edit_inside_one_mtime_tick_still_moves_the_digest(self):
+        """The bundle cache lied, and the seal believed it.
+
+        Found by dogfooding, and present in the SHIPPED tree: filesystem
+        timestamp granularity is coarser than a write, so two same-size
+        rewrites inside one tick are indistinguishable by stat — identical
+        mtime AND ctime AND size AND inode. The (mtime, size) cache then
+        served the OLD digest for a governance file that had changed, the
+        bundle did not move, and the task was not blocked. The sealed
+        measure went stale in silence, which is the one thing the governance
+        freeze exists to prevent.
+
+        Both schemas: this is not a change to WHAT is measured (so it does
+        not belong to the v2 projection), it is a fix to the cache lying
+        about it, and v1's cache lies the same way.
+        """
+        registry = os.path.join(self.repo, ".cgel", "registry.json")
+        for schema in (1, 2):
+            with self.subTest(schema=schema):
+                with open(registry, "w") as fh:
+                    json.dump({"checks": {"ok-check": {"command": "pytest -q"}}}, fh)
+                before = self.bundle(schema=schema)["digest"]
+                # Same byte length, different meaning: the check now runs a
+                # different command, so the measure genuinely moved.
+                with open(registry, "w") as fh:
+                    json.dump({"checks": {"ok-check": {"command": "pytest -x"}}}, fh)
+                self.assertNotEqual(self.bundle(schema=schema)["digest"], before)
+
+    def test_the_cache_still_serves_a_settled_file(self):
+        """The settle window must not defeat the cache it guards: the cost is
+        bounded to files written seconds ago.
+
+        Written first as `first["digest"] == second["digest"]` on an unmoved
+        file — which is true whether the digest was cached or rehashed, and
+        passed with the cache disabled entirely. A digest is a pure function
+        of content, so equality observes nothing.
+
+        The second attempt tried to observe a HIT by changing the content
+        while restoring the stat key with os.utime — but utime cannot restore
+        ctime, and schema 2's key includes it, so the cache correctly missed
+        and the test failed for a reason that was not the bug. Both attempts
+        were the same mistake: asserting on a VALUE rather than on the
+        mechanism.
+
+        So count the hashing. A cache hit is precisely "sha256_file was not
+        called for this member", and nothing else is.
+        """
+        import time
+
+        path = os.path.join(self.repo, ".cgel", "registry.json")
+        settled = time.time() - 3600
+        os.utime(path, (settled, settled))
+        self.bundle()  # populate the cache under this stat key
+
+        hashed = []
+        real = self.C.sha256_file
+        self.C.sha256_file = lambda p: (hashed.append(p), real(p))[1]
+        try:
+            self.bundle()
+        finally:
+            self.C.sha256_file = real
+        self.assertNotIn(
+            path, hashed,
+            "a settled, unmodified file was rehashed — the settle window has "
+            "swallowed the cache it was meant to guard",
+        )
+
+    def test_a_bundle_change_names_what_moved_and_offers_the_same_digest(self):
+        self.seal()
+        with open(os.path.join(self.repo, ".cgel", "registry.json"), "a") as fh:
+            fh.write("\n")
+        code, out, err = self.cli("verify", "ok-check")
+        self.assertIn(".cgel/registry.json", err)
+        self.assertIn("reseal the SAME digest", err)
 
 
 if __name__ == "__main__":

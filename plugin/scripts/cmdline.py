@@ -361,21 +361,19 @@ def gh_parts(argv):
     return None, None, []
 
 
-def cgel_parts(argv):
-    """(verb, args) for a cgel invocation, globals stripped.
-
-    A `-C <root>` flag is planned for the CLI; strip it here so the approval
-    gate's verb detection does not silently stop matching the day it lands."""
-    if not argv or argv[0] != "cgel":
-        return None, []
-    i = 1
-    while i < len(argv):
-        tok = argv[i]
-        if tok == "-C":
-            i += 2
-            continue
-        if tok.startswith("-"):
-            i += 1
-            continue
-        return tok, argv[i + 1 :]
-    return None, []
+# Tombstone: cgel_parts(argv) is DELETED. It returned (verb, args) for a cgel
+# invocation with globals stripped, and existed for one stated purpose — "a
+# `-C <root>` flag is planned for the CLI; strip it here so the approval
+# gate's verb detection does not silently stop matching the day it lands".
+#
+# That day arrived. The flag shipped, and the gate did not use this: verb
+# detection must be TOTAL, and analyze() returns argv=None for a line it
+# cannot resolve, so approval_gate needs a raw-text anchor regardless. Its
+# `_CGEL` prefix is that anchor and it tolerates the flag directly, which
+# left this as a second, unused implementation of a solved problem — and a
+# WRONG one: it stripped `-C <val>` but not `--directory <val>`, so
+# `cgel --directory /repo seal T1` returned verb="/repo". A helper nothing
+# calls, whose docstring promises a future that has already happened, and
+# which is wrong for the flag it names, is the exact shape D-46 deleted five
+# of. If a caller ever needs argv-level cgel parsing, write it then, against
+# the flags that exist then.

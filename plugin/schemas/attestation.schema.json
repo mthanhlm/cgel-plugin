@@ -2,38 +2,92 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cgel.dev/schemas/attestation.schema.json",
   "title": "CGEL Attestation (Phase 3)",
-  "description": "Sanitized, exportable task summary: ids, statuses, digests. No raw command output, no logs, no secrets. Persistence: `local` only — the attestation is written to the runtime state store and never committed. An enum of local|ci-artifact|pr-comment|repository was once advertised here and only `local` was ever implemented; `cgel attest` now rejects the other three rather than accepting them and printing a footnote.",
+  "description": "Sanitized, exportable task summary: ids, statuses, digests. No raw command output, no logs, no secrets. Persistence: `local` only — the attestation is written to the runtime state store and never committed. An enum of local|ci-artifact|pr-comment|repository was once advertised here and only `local` was ever implemented; `cgel attest` now rejects the other three rather than accepting them and printing a footnote. This schema has no additionalProperties: false and CGEL ships no jsonschema dependency, so it DOCUMENTS the attestation rather than constraining it. The tests assert presence and type by hand.",
   "type": "object",
-  "required": ["task_id", "terminal_status", "contract_digest", "criteria"],
+  "required": [
+    "task_id",
+    "terminal_status",
+    "contract_digest",
+    "criteria"
+  ],
   "properties": {
-    "task_id": {"type": "string"},
-    "terminal_status": {"type": "string"},
-    "contract_digest": {"type": "string"},
-    "governance_digest": {"type": ["string", "null"]},
+    "task_id": {
+      "type": "string"
+    },
+    "terminal_status": {
+      "type": "string"
+    },
+    "contract_digest": {
+      "type": "string"
+    },
+    "governance_digest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "semantic_verification": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "properties": {
-        "required": {"type": "boolean"},
-        "reasons": {"type": "array", "items": {"type": "string"}},
-        "blocking_rule_ids": {"type": "array", "items": {"type": "string"}}
+        "required": {
+          "type": "boolean"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blocking_rule_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "criteria": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "checks"],
+        "required": [
+          "id",
+          "checks"
+        ],
         "properties": {
-          "id": {"type": "string"},
+          "id": {
+            "type": "string"
+          },
           "checks": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "check_id": {"type": "string"},
-                "status": {"enum": ["pass", "fail", "missing"]},
-                "output_digest": {"type": ["string", "null"]},
-                "recorded_at": {"type": ["string", "null"]}
+                "check_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "missing"
+                  ]
+                },
+                "output_digest": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "recorded_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
               }
             }
           }
@@ -45,22 +99,74 @@
       "items": {
         "type": "object",
         "properties": {
-          "rule_id": {"type": "string"},
-          "status": {"enum": ["pass", "fail"]},
-          "confidence": {"type": "number"}
+          "rule_id": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "fail"
+            ]
+          },
+          "confidence": {
+            "type": "number"
+          }
         }
       }
     },
     "iterations": {
       "type": "object",
       "properties": {
-        "opened": {"type": "integer"},
-        "decisions": {"type": "object"}
+        "opened": {
+          "type": "integer"
+        },
+        "decisions": {
+          "type": "object"
+        }
       }
     },
-    "evidence_chain_head": {"type": ["string", "null"]},
-    "events_chain_head": {"type": ["string", "null"]},
-    "sealed_at": {"type": ["string", "null"]},
-    "created_at": {"type": "string"}
+    "evidence_chain_head": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "events_chain_head": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sealed_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "terminal_reason": {
+      "description": "The --reason given at close, verbatim. Required by the CLI for every terminal status; absent here only on an attestation built for an OPEN task (`cgel attest`).",
+      "type": "string"
+    },
+    "pass_blockers": {
+      "description": "What the PASS validator would have objected to. Empty on a PASS (it could not have closed otherwise). On an ESCALATE or ABORT this is the useful part: what CGEL could NOT have certified.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "user_sentence": {
+      "description": "The plain sentence CGEL asked the model to relay to the user. GUIDANCE_ONLY: recorded here so the record shows what the user should have been told, whether or not they were.",
+      "type": "string"
+    },
+    "degradations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Controls that were not fully running for this task (e.g. 'workspace-binding-inert: no-git'). Empty when clean. A degradation does NOT gate PASS: the point is to kill the silence, not to add a refusal the user cannot act on."
+    }
   }
 }

@@ -63,6 +63,12 @@ design, debate rounds v0.1→v1.0). All four MVP phases are implemented:
 | User's uncommitted work is protected | dirty-tree check at seal (`--allow-dirty` only after explicit user confirmation) | EVIDENCE_GATED |
 | No destructive git commands | `PreToolUse` Bash guard (`scripts/command_guard.py`), fail-closed | guardrail on the command string |
 | No AI attribution in commits/PRs | `cgel init` sets `attribution.commit`/`pr`/`sessionUrl` to `""` in `.claude/settings.json`, so the harness never authors the trailer at all (covers `$EDITOR` and `--body-file`); the Bash guard additionally blocks a `git commit` / `gh pr create\|edit` whose text carries a `Co-Authored-By: Claude` trailer or generated-with footer typed inline; `SessionStart` injects the standing rule as the belt-and-braces third layer | HARD_ENFORCED (settings) + guardrail on the command string |
+| Evidence is bound to the code that produced it | every `cgel verify` record carries a `diff_digest` of the working tree; PASS refuses when it no longer matches | EVIDENCE_GATED — **and only when the workspace binding is live.** With no git the digest is a constant that equals itself forever, so evidence can never go stale. `cgel seal` warns, `cgel audit` prints `workspace=inert`, and the record carries `degraded`. |
+| The sealed measure cannot move mid-task | the governance bundle (rules, registry, hook config) is digested at seal; a change moves the task to BLOCKED | EVIDENCE_GATED (tamper-evident) — **with two carve-outs, both deliberate.** `.claude/settings.local.json`'s `permissions` key is not measured (the harness rewrites it every time you approve a tool, so measuring it meant your own approval blocked every open task), and `bundle_exclude` globs drop paths you nominate. Excluded files stay edit-gated; `cgel seal` names them. |
+| A blocking semantic finding cannot be erased | `close --as PASS` refuses a blocking→clean transition with no workspace change recorded between the two verifier runs | EVIDENCE_GATED |
+| Every terminal status is recorded and explained | `cgel close` requires `--reason`, chains a close record, and exports an attestation for PASS, ESCALATE and ABORT alike | EVIDENCE_GATED |
+| The user is told, in words, what a close means | `cgel close` prints one verbatim sentence for the model to relay | **GUIDANCE_ONLY** — the words can be printed; nobody can be made to say them |
+| The gate you are told about is the gate that is running | hooks leave a liveness beacon; `cgel status` carries `gate=on\|off\|unobserved` | **DIAGNOSTIC** — `unobserved` means CGEL cannot see a hook, which is *not* proof one did not run. Absence of evidence, reported as absence. |
 
 **Precondition for every row above.** CGEL activates per project, and a project is a directory containing `.cgel/`.
 
@@ -214,6 +220,44 @@ a watch glob (or when HEAD moves — a commit re-bases everything). No
 `watch` keeps the old behavior exactly. The watch list is authored with
 the check and trusted exactly as far as the command itself (D-37): a wrong
 watch is a wrong yardstick, and doctor cannot see it.
+
+## When you are stuck
+
+CGEL is a set of controls, and a control that cannot be satisfied is a wedge.
+There is always a legal way out; you never need to reach for the off switch.
+
+| You are stuck because | The way out |
+|---|---|
+| the same failure keeps coming back, and both RETRY and REPLAN are refused | `cgel close --as ESCALATE --reason "..."` — a third plan against a failure two plans did not move is not a plan |
+| the task went BLOCKED with an iteration open | `cgel iterate decide ROLLBACK_ITERATION` is legal while blocked |
+| the governance bundle moved and the contract is unchanged | reseal the **same** digest — it needs no new approval |
+| the budget is exhausted | only the user widens it: `cgel unblock --add-iterations <n>` |
+| a check is registered but wrong, and every task is open | close the tasks, or seal a task with `protected_capabilities: ["modify-verification-registry"]` and `required_checks: []` — it closes ESCALATE by design, because its job is to change the measure, not to be measured by it |
+| the scope is wrong | amend the contract and reseal with the user. Do not widen a change silently |
+| the work genuinely cannot be finished | `cgel close --as ESCALATE --reason "..."` is a **normal** outcome, not a failure state. Every terminal status is recorded, attested and explained |
+
+The one thing that is never the answer is `CGEL_GATE=off`. That is the user's
+switch, not the model's.
+
+## What it costs
+
+CGEL spends tokens to buy evidence. Roughly, per task:
+
+- the **ceremony** (draft, `cgel summary`, one approval question, `cgel seal`)
+  is a few thousand tokens, once;
+- each **iteration** adds an `iterate open` / `verify` / `iterate decide`
+  round trip — small, but it is per iteration;
+- the **challenger** (medium/high risk, before the seal) and the **verifier**
+  (required at high risk, or `semantic_review: true`) are each a separate
+  subagent read of the changed files. These are the expensive part, and they
+  are pinned to Opus in the agent frontmatter because a cheap reviewer that
+  misses things is worse than no reviewer.
+
+So a `low`-risk task with two iterations is nearly free, and a `high`-risk
+task with a wide scope and five iterations is not. That is the intended
+shape: the cost tracks the claim. If you want the cheap path, argue `low`
+honestly and accept that nothing will grade the work — the summary screen
+says so in those words before you approve.
 
 ## Explicit limitations (Profile A honesty)
 
@@ -418,12 +462,21 @@ identity**. It is meant for you to type, but nothing distinguishes you typing
 it from the model typing it — which is why no block message mentions it. It
 is a convenience for the user, not a boundary against the model.
 
-Governance-bundle churn: file digests are cached by mtime+size in the state
-store, and `.cgel/config.json` `{"bundle_exclude": ["glob", ...]}` drops
-churn-prone paths (a gitignored repo-local skill, say) from the sealed
-measure — they stay edit-gated, but changing them no longer voids open
-seals. The config file itself is always digested, so an exclusion cannot
-arrive invisibly mid-task.
+Governance-bundle churn: file digests are cached in the state store by a
+stat key — `(mtime_ns, size)` for a seal made before v0.13, and
+`(schema, mtime_ns, size, ctime_ns, inode)` for one made since. At either
+schema a member touched within the last couple of seconds is rehashed
+rather than trusted, because filesystem timestamp granularity is coarser
+than a write: two same-size rewrites inside one tick are indistinguishable
+by stat, and a cache that believed them served the old digest for a file
+that had changed.
+
+`.cgel/config.json` `{"bundle_exclude": ["glob", ...]}` drops churn-prone
+paths (a gitignored repo-local skill, say) from the sealed measure — they
+stay edit-gated, but changing them no longer voids open seals. The config
+file itself is always digested, so an exclusion cannot arrive invisibly
+mid-task, and both `cgel seal` and `cgel audit` name the excluded files (the
+first few, with a count of the rest).
 
 The no-AI-attribution rule (injected instruction + commit/PR block) is on by
 default in every CGEL project, task or not. Turn off just that rule with
@@ -458,7 +511,7 @@ conflicts. MCP interface for the control plane: decide with Phase 1 usage
 data.
 
 Design record: [ARCHITECT.md](ARCHITECT.md) — the signed-off CGEL v1.0
-consolidated architecture, plus the post-v1.0 amendments D-35..D-46 that
+consolidated architecture, plus the post-v1.0 amendments D-35..D-47 that
 record every change since. [ROADMAP.md](ROADMAP.md) holds the parts that
 were designed and never built — it is a wish list, kept apart from the
 design record on purpose.

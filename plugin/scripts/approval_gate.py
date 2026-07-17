@@ -104,8 +104,24 @@ def main():
     # Root at the project the command NAMES, not the one the session sits in:
     # `cgel -C ../other seal …` seals ../other, so ../other's approvals and
     # config are the ones that govern it.
+    #
+    # `-C` is relative to the SESSION's directory, which is payload["cwd"] —
+    # not to this hook process's cwd, which is wherever the harness happened
+    # to spawn us and has nothing to do with the user. Resolving `-C .`
+    # against the process cwd silently rooted the gate at a different project
+    # (or none), and if that project had approval_gate:off the gate stood
+    # aside: the one-flag bypass, reintroduced by the fix for it.
+    #
+    # Joined by hand rather than via resolve_repo_root(cwd, target): that
+    # takes the target's DIRNAME, which is right for a file and wrong for a
+    # flag that names a directory.
     dash_c = _DASH_C.search(command)
-    repo_root = C.resolve_repo_root(dash_c.group(1) if dash_c else cwd)
+    if dash_c:
+        named = dash_c.group(1)
+        base = named if os.path.isabs(named) else os.path.join(cwd, named)
+    else:
+        base = cwd
+    repo_root = C.resolve_repo_root(base)
 
     purposes = [name for name, pattern in COMMAND_BOUND_RES if pattern.search(command)]
     seal = bool(SEAL_RE.search(command))

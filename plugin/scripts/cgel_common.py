@@ -617,7 +617,7 @@ def _store_tasks(repo_root):
             state = load_json(os.path.join(tdir, "state.json"))
             sealed = load_json(os.path.join(tdir, "sealed_task.json"))
         except Exception as exc:
-            _debug("open_tasks:%s" % name, exc)
+            _debug("_store_tasks:%s" % name, exc)
             continue
         if not isinstance(state, dict) or not isinstance(sealed, dict):
             # Valid JSON of the wrong shape. This is an enumerator on the read
@@ -625,7 +625,7 @@ def _store_tasks(repo_root):
             # refuse (seal's stale-directory check) does its own guarding.
             # Without this the .get() below raised out of every verb that lists
             # tasks, including the seal that was trying to report the problem.
-            _debug("open_tasks:%s" % name, TypeError("state.json is not an object"))
+            _debug("_store_tasks:%s" % name, TypeError("state.json is not an object"))
             continue
         if state.get("lifecycle") not in TASK_LIFECYCLES:
             continue
@@ -852,13 +852,53 @@ def _iter_bundle_files(repo_root):
                 yield os.path.relpath(full, repo_root).replace(os.sep, "/")
 
 
-def governance_bundle(repo_root):
+BUNDLE_SCHEMA = 2
+
+# A stat-keyed cache may not be trusted for a file whose mtime is inside the
+# filesystem's timestamp granularity: within one tick, two same-size writes
+# are indistinguishable by stat. Rehash instead of guessing.
+STAT_CACHE_SETTLE_SECONDS = 2.0
+
+# Keys the bundle deliberately does NOT measure, per member. `permissions` in
+# settings.local.json is rewritten by the harness every time the user approves
+# a tool — measuring it meant the user's own approval BLOCKED every open task,
+# which taught them the block was noise. The rest of the file is still
+# measured, and the file is still edit-gated as a governance path.
+BUNDLE_PROJECTIONS = {".claude/settings.local.json": ("permissions",)}
+
+
+def projected_digest(full_path, drop_keys):
+    """Digest a JSON member with `drop_keys` removed. Any parse trouble falls
+    back to the whole file: measuring too much is a false block, measuring the
+    wrong thing silently is a hole, and only one of those is safe."""
+    try:
+        with open(full_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return sha256_file(full_path)
+        kept = {k: v for k, v in data.items() if k not in drop_keys}
+        return sha256_bytes(canonical_json(kept).encode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 — unreadable/invalid: measure it all
+        _debug("bundle:projection:%s" % full_path, exc)
+        return sha256_file(full_path)
+
+
+def governance_bundle(repo_root, schema=BUNDLE_SCHEMA):
     """Digest every gate-protected file: the sealed measure (contract §15.5).
 
-    File digests are cached by (mtime_ns, size) in the runtime state store —
-    same principal as everything else there, so the cache concedes nothing
-    Profile A had not already conceded, and it turns the per-verify bundle
-    walk from hash-everything into stat-everything.
+    VERSIONED: `schema` selects the measure. Callers comparing against a
+    SEALED bundle must recompute under THAT bundle's schema, defaulting to 1
+    when it records none (i.e. every seal made before this release). The
+    projection and the richer cache key therefore apply only to new seals —
+    no open seal moves, and nobody is forced to reseal to upgrade.
+
+    File digests are cached by a stat key in the runtime state store — same
+    principal as everything else there, so the cache concedes nothing Profile
+    A had not already conceded, and it turns the per-verify bundle walk from
+    hash-everything into stat-everything. The key is (mtime_ns, size) at
+    schema 1 and (schema, mtime_ns, size, ctime_ns, inode) at schema 2, and
+    at either schema a member touched within STAT_CACHE_SETTLE_SECONDS is
+    rehashed rather than trusted.
 
     Config `bundle_exclude` globs drop churn-prone paths from the measure
     (the recurring case: a gitignored repo-local skill whose every edit
@@ -876,26 +916,58 @@ def governance_bundle(repo_root):
         cache = {}
     members = {}
     fresh = {}
+    excluded = []
     rehashed = False
     for rel in sorted(set(_iter_bundle_files(repo_root))):
         if exclude and rel != ".cgel/config.json" and path_matches(rel, exclude):
+            excluded.append(rel)
             continue
         full = os.path.join(repo_root, rel)
         try:
             info = os.stat(full)
-            key = "%d:%d" % (info.st_mtime_ns, info.st_size)
+            if schema >= 2:
+                # ctime and inode too: a file swapped for another of the same
+                # size keeps mtime+size, and the pair alone was a cache hit on
+                # the old content.
+                key = "v2:%d:%d:%d:%d:%d" % (
+                    schema, info.st_mtime_ns, info.st_size,
+                    info.st_ctime_ns, info.st_ino,
+                )
+            else:
+                key = "%d:%d" % (info.st_mtime_ns, info.st_size)
+            # Applies to BOTH schemas, because it is not a change to the
+            # measure — it is a fix to the cache lying about it, and v1's
+            # cache lies the same way. Filesystem timestamp granularity is
+            # coarser than a write: two same-size rewrites inside one tick
+            # produce identical mtime AND ctime (measured, not assumed: on
+            # WSL2 /tmp three consecutive writes share one ns). A stat-keyed
+            # cache then serves the OLD digest for a governance file that
+            # changed, so the bundle does not move and the sealed measure is
+            # silently stale — verified against the shipped tree by editing a
+            # registry check command and watching the digest hold still.
+            # A file touched inside the window is never served from cache;
+            # the cost is bounded to files written seconds ago.
+            if key and time.time() - info.st_mtime < STAT_CACHE_SETTLE_SECONDS:
+                key = None
         except OSError:
             key = None
         cached = cache.get(rel)
         if key and isinstance(cached, dict) and cached.get("key") == key:
             digest = cached.get("digest")
         else:
-            digest = sha256_file(full)
+            drop = BUNDLE_PROJECTIONS.get(rel) if schema >= 2 else None
+            digest = projected_digest(full, drop) if drop else sha256_file(full)
             rehashed = True
         if digest:
             members[rel] = digest
             if key:
                 fresh[rel] = {"key": key, "digest": digest}
+        elif schema >= 2:
+            # sha256_file returns None for a member it cannot read (mode 000,
+            # a dangling link). Dropping it silently REMOVED it from the
+            # measure, so making a governance file unreadable took it out of
+            # the bundle without moving the digest. Record the fact instead.
+            members[rel] = "unreadable"
     if rehashed or set(fresh) != set(cache):
         try:
             atomic_write_json(cache_path, fresh)
@@ -903,7 +975,12 @@ def governance_bundle(repo_root):
             _debug("bundle:cache", exc)
     member_list = [{"path": rel, "digest": members[rel]} for rel in sorted(members)]
     bundle_digest = sha256_bytes(canonical_json(member_list).encode("utf-8"))
-    return {"digest": bundle_digest, "members": member_list}
+    return {
+        "digest": bundle_digest,
+        "members": member_list,
+        "schema": schema,
+        "excluded": excluded,
+    }
 
 
 def bundle_diff(sealed_members, current_members):

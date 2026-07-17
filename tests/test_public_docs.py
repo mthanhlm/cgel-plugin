@@ -352,5 +352,128 @@ class ReadmeCarriesTheTaxonomy(unittest.TestCase):
         self.assertIn("D-35", text)
 
 
+class WhatThisTaskMadeTrueIsStated(unittest.TestCase):
+    """AC-9 — a claim made true in code and left unstated is still a claim
+    the user cannot act on. These pin the wording, not the paraphrase."""
+
+    def test_the_rooting_precondition_is_stated(self):
+        readme = " ".join(read("README.md").split())
+        self.assertIn("CGEL activates per project", readme)
+        self.assertIn("root at the **file being touched**", readme)
+        self.assertIn("root at the **session's working directory**", readme)
+
+    def test_the_cost_is_disclosed(self):
+        readme = " ".join(read("README.md").split())
+        self.assertIn("What it costs", readme)
+        self.assertIn("the cost tracks the claim", readme)
+
+    def test_the_escape_hatch_exists_and_never_points_at_the_off_switch(self):
+        readme = " ".join(read("README.md").split())
+        self.assertIn("When you are stuck", readme)
+        self.assertIn("There is always a legal way out", readme)
+        self.assertIn("never the answer is `CGEL_GATE=off`", readme)
+
+    def test_the_bundle_row_discloses_its_carve_outs(self):
+        # The row said "any change moves the task to BLOCKED" while the same
+        # change made `permissions` unmeasured — an unqualified claim in the
+        # assurance table with a carve-out the diff itself created. Every
+        # other row here carries its qualifier inline; this one must too.
+        readme = read("README.md")
+        row = [l for l in readme.splitlines() if "The sealed measure cannot move" in l]
+        self.assertTrue(row, "the sealed-measure row is missing")
+        self.assertIn("carve-outs", row[0])
+        self.assertIn("permissions", row[0])
+        self.assertIn("bundle_exclude", row[0])
+        self.assertNotIn("any change moves", row[0])
+
+    def test_the_bundle_cache_key_is_described_as_it_is(self):
+        readme = " ".join(read("README.md").split())
+        self.assertNotIn("cached by mtime+size", readme)
+        self.assertIn("timestamp granularity is coarser than a write", readme)
+
+    def test_the_inert_workspace_row_qualifies_the_freshness_claim(self):
+        readme = " ".join(read("README.md").split())
+        self.assertIn("only when the workspace binding is live", readme)
+        self.assertIn("evidence can never go stale", readme)
+
+    def test_the_user_sentence_is_never_claimed_as_enforced(self):
+        # It cannot be enforced: CGEL prints words, the model relays them or
+        # does not. Claiming HARD_ENFORCED here would be the exact defect
+        # this release exists to remove.
+        readme = read("README.md")
+        row = [l for l in readme.splitlines() if "verbatim sentence" in l]
+        self.assertTrue(row, "the close-sentence row is missing")
+        self.assertIn("GUIDANCE_ONLY", row[0])
+        self.assertNotIn("HARD_ENFORCED", row[0])
+
+    def test_the_gate_token_row_is_a_diagnostic_not_a_guarantee(self):
+        readme = read("README.md")
+        row = [l for l in readme.splitlines() if "liveness beacon" in l]
+        self.assertTrue(row, "the gate-liveness row is missing")
+        self.assertIn("DIAGNOSTIC", row[0])
+        self.assertIn("not* proof one did not run", row[0])
+
+    def test_semantic_review_is_in_the_schema_and_cannot_disable_the_verifier(self):
+        schema = json.loads(read("plugin/schemas/task-contract.schema.json"))
+        field = schema["properties"]["semantic_review"]
+        self.assertEqual(field["type"], "boolean")
+        self.assertIn("cannot turn verification OFF", field["description"])
+
+    def test_the_verifier_is_told_the_diff_is_not_optional(self):
+        verifier = " ".join(read("plugin/agents/verifier.md").split())
+        self.assertIn("The diff is not optional", verifier)
+        attest = " ".join(read("plugin/skills/attest/SKILL.md").split())
+        self.assertIn("git diff HEAD", attest)
+        self.assertIn("if you do not send it, it does not exist", attest)
+
+    def test_every_rule_id_the_verifier_is_told_to_emit_actually_exists(self):
+        """The fail-closed path must not itself be a wedge.
+
+        This test exists because the first version of the diff handoff told
+        the verifier to file a missing-input finding under an invented id,
+        `CGEL-VERIFIER-INPUT`. `cgel semantic record` rejects any rule_id not
+        in force, so that finding could never have been recorded: the escape
+        hatch documented in the task about closing wedges was a wedge. The
+        earlier test asserted only that the string was PRESENT — which is why
+        it passed. Presence is not resolvability.
+
+        The FIRST version of this test could not see the id it was written to
+        catch: it collected cited ids with `CGEL-[A-Z]+-\\d+`, and
+        `CGEL-VERIFIER-INPUT` ends in a word, not digits. A guard that cannot
+        match its own motivating example is the same claim-without-
+        implementation shape one level up, so the pattern is checked against
+        that example below rather than trusted.
+        """
+        CITED = r"\bCGEL-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*\b"
+        self.assertRegex(
+            "CGEL-VERIFIER-INPUT", CITED,
+            "the id pattern cannot match the id this test exists to catch",
+        )
+        self.assertRegex("CGEL-IMPACT-1", CITED)
+
+        rules = read("plugin/rules/builtin.md")
+        defined = set(re.findall(r"^##\s+(%s)" % CITED.strip("\\b"), rules, re.M))
+        defined |= set(re.findall(r"\bid:\s*(%s)" % CITED.strip("\\b"), rules))
+        self.assertIn("CGEL-IMPACT-1", defined, "rule-id parser found nothing")
+        cited = set(re.findall(CITED, read("plugin/agents/verifier.md")))
+        self.assertTrue(cited)
+        undefined = sorted(cited - defined)
+        self.assertEqual(
+            undefined, [],
+            "verifier.md tells the verifier to emit rule id(s) no rule defines, "
+            "and `cgel semantic record` refuses unknown ids: %s" % undefined,
+        )
+
+    def test_the_attestation_schema_says_it_does_not_constrain(self):
+        # No additionalProperties: false and no jsonschema dependency, so it
+        # documents. Saying otherwise would be a claim nothing enforces.
+        schema = json.loads(read("plugin/schemas/attestation.schema.json"))
+        self.assertIn("DOCUMENTS the attestation", schema["description"])
+        self.assertNotIn("additionalProperties", schema)
+        for field in ("terminal_reason", "pass_blockers", "user_sentence",
+                      "degradations"):
+            self.assertIn(field, schema["properties"], field)
+
+
 if __name__ == "__main__":
     unittest.main()

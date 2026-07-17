@@ -185,6 +185,10 @@
           "type": "string"
         }
       }
+    },
+    "semantic_review": {
+      "type": "boolean",
+      "description": "Opt in to semantic verification regardless of risk.level. Verification is already REQUIRED at risk.level=high; this raises it for a task the author rates lower but still wants judged. It cannot turn verification OFF: the requirement is the OR of this flag and the risk level, so the graded party cannot stand the verifier down. `cgel summary` prints the resulting verdict above the digest and carries semantic=required|none on the decision line."
     }
   }
 }

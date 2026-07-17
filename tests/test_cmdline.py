@@ -200,7 +200,7 @@ class Separators(unittest.TestCase):
     def test_chained_commands_are_separate_segments(self):
         segs = cmdline.analyze("cgel seal T1 --digest sha256:ab && git push --force")
         self.assertEqual(len(segs), 2)
-        self.assertEqual(cmdline.cgel_parts(segs[0].argv)[0], "seal")
+        self.assertEqual(segs[0].argv[0], "cgel")
         self.assertEqual(cmdline.git_parts(segs[1].argv)[0], "push")
 
     def test_semicolons_and_background(self):
@@ -217,17 +217,17 @@ class Parts(unittest.TestCase):
         self.assertEqual(verb, "pr")
         self.assertEqual(sub, "create")
 
-    def test_cgel_dash_C_does_not_hide_the_verb(self):
-        # The CLI's -C flag does not exist yet. Stripping it here means the
-        # approval gate's verb detection does not silently stop matching the
-        # day it lands.
-        verb, args = cmdline.cgel_parts(cmdline.analyze("cgel -C /repo seal T1")[0].argv)
-        self.assertEqual(verb, "seal")
-        self.assertEqual(args, ["T1"])
+    # Tombstone: test_cgel_dash_C_does_not_hide_the_verb is DELETED with
+    # cgel_parts. Its premise — "the CLI's -C flag does not exist yet" — was
+    # true when written and false the day the flag shipped, and the helper it
+    # guarded was never wired to anything. The property it cared about (a -C
+    # between `cgel` and the verb must not hide the verb from the approval
+    # gate) is real and now lives where it is enforced:
+    # test_approvals.py::test_dash_c_does_not_walk_past_the_gate exercises the
+    # gate itself against every gated verb and both flag spellings.
 
     def test_parts_of_a_non_match_are_empty(self):
         self.assertEqual(cmdline.git_parts(["npm", "test"]), (None, []))
-        self.assertEqual(cmdline.cgel_parts(["git", "push"]), (None, []))
         self.assertEqual(cmdline.git_parts(None), (None, []))
 
 

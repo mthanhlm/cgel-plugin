@@ -660,9 +660,39 @@ def cmd_seal(args):
     details = [
         "cgel: edits are now allowed inside scope.allowed. Governance paths "
         "stay read-only unless a protected capability grants them.",
-        "cgel: governance bundle sealed (%d files). Changing any of them "
-        "mid-task moves the task to BLOCKED." % len(bundle["members"]),
+        "cgel: governance bundle sealed (%d files). Changing one mid-task "
+        "moves the task to BLOCKED." % len(bundle["members"]),
     ]
+    # Both carve-outs are disclosed HERE, at the moment the claim is made:
+    # bundle_exclude just below, and the projection next. A screen that names
+    # one of two exemptions reads as if there were one.
+    projected = [
+        rel for rel in C.BUNDLE_PROJECTIONS if any(
+            m["path"] == rel for m in bundle["members"]
+        )
+    ]
+    if projected and bundle.get("schema", 1) >= 2:
+        details.append(
+            "cgel: not measured, by design: %s. The harness rewrites those "
+            "keys whenever you approve a tool, so measuring them would let "
+            "your own approval block this task. The rest of each file is "
+            "measured."
+            % "; ".join(
+                "%s (%s)" % (rel, ", ".join(C.BUNDLE_PROJECTIONS[rel]))
+                for rel in projected
+            )
+        )
+    if bundle.get("excluded"):
+        # A file dropped from the measure by `bundle_exclude` is a governance
+        # file whose changes will NOT block this task. That is the user's
+        # decision, and it is one they should be reminded of at the moment
+        # they seal, not left to rediscover.
+        details.append(
+            "cgel: %d governance file(s) are EXCLUDED from the measure by "
+            "config bundle_exclude (%s) — changing them will not block this "
+            "task. They stay edit-gated."
+            % (len(bundle["excluded"]), _name_some(bundle["excluded"]))
+        )
     if others:
         details.append(
             "cgel: %d other task(s) open (%s) — pass --task on every verb."
@@ -694,6 +724,32 @@ def cmd_seal(args):
 
 # ------------------------------------------------------- evidence pipeline
 
+def _name_some(items, limit=5):
+    """A truncated list that says it is truncated.
+
+    cmd_audit printed a COUNT of N over a list of 5 with no tell, so the
+    remainder vanished silently — a disclosure that hides part of what it
+    discloses is not one.
+    """
+    items = list(items)
+    shown = ", ".join(items[:limit])
+    if len(items) > limit:
+        shown += " (+%d more)" % (len(items) - limit)
+    return shown
+
+
+def _current_bundle_for(root, sealed_bundle):
+    """Recompute the bundle under the measure the SEAL used.
+
+    A seal is a promise about a specific measure. Comparing a v1 seal against
+    a v2 bundle would move every open task's digest on upgrade — a repo-wide
+    BLOCKED the user did nothing to earn, on a release whose whole point is
+    that the table is true. Absent schema means 1: every seal made before
+    this release.
+    """
+    return C.governance_bundle(root, schema=(sealed_bundle or {}).get("schema", 1))
+
+
 def _bundle_changed(root, task, block=True):
     """True if the governance bundle moved after seal.
 
@@ -705,14 +761,28 @@ def _bundle_changed(root, task, block=True):
     sealed_bundle = (task.get("sealed") or {}).get("governance_bundle")
     if not sealed_bundle:
         return False
-    current = C.governance_bundle(root)
+    current = _current_bundle_for(root, sealed_bundle)
     if current["digest"] == sealed_bundle["digest"]:
         return False
     if block:
-        for change in C.bundle_diff(
-            sealed_bundle.get("members"), current["members"]
-        )[:20]:
+        changes = C.bundle_diff(sealed_bundle.get("members"), current["members"])
+        for change in changes[:20]:
             print("  bundle %s" % change, file=sys.stderr)
+        print(
+            "cgel: the sealed governance bundle moved (%s%s). The task is "
+            "BLOCKED because the measure it is judged by is not the one it "
+            "was sealed against."
+            % (
+                ", ".join(changes[:3]),
+                " (+%d more)" % (len(changes) - 3) if len(changes) > 3 else "",
+            ),
+            file=sys.stderr,
+        )
+        print(
+            "cgel: if the contract itself is unchanged, reseal the SAME digest "
+            "— it needs no new approval.",
+            file=sys.stderr,
+        )
         C.set_blocked(root, task["task_id"], "sealed-guidebook-bundle-changed")
     return True
 
@@ -1031,7 +1101,7 @@ def cmd_audit(args):
     sealed = task["sealed"]
     sealed_bundle = sealed.get("governance_bundle")
     if sealed_bundle:
-        current = C.governance_bundle(root)
+        current = _current_bundle_for(root, sealed_bundle)
         if current["digest"] != sealed_bundle["digest"]:
             problems.append("governance bundle changed since seal")
             for change in C.bundle_diff(
@@ -1067,12 +1137,32 @@ def cmd_audit(args):
     # claim stands — but "bound to the code as it stands" is a different
     # claim, and it is the one being qualified here. Counts pre-upgrade
     # records too (no `degraded` key, diff_digest == the no-git constant).
-    inert_records = sum(
-        1
-        for r in evidence
-        if (r.get("workspace") or {}).get("degraded")
-        or (r.get("workspace") or {}).get("diff_digest") == "no-git"
-    )
+    inert_records = sum(1 for r in evidence if _evidence_is_inert(r))
+    if sealed_bundle:
+        # BOTH carve-outs, on the surface that asserts the bundle claim. The
+        # projection was disclosed at seal and not here, which is the same
+        # one-of-two exemption the seal screen used to print.
+        excluded = sealed_bundle.get("excluded") or []
+        if excluded:
+            warnings.append(
+                "%d governance file(s) are excluded from the sealed measure "
+                "(%s) — changes to them cannot block this task"
+                % (len(excluded), _name_some(excluded))
+            )
+        projected = [
+            rel
+            for rel in C.BUNDLE_PROJECTIONS
+            if any(m["path"] == rel for m in sealed_bundle.get("members") or [])
+        ]
+        if projected and sealed_bundle.get("schema", 1) >= 2:
+            warnings.append(
+                "not measured by design, so changes to them cannot block this "
+                "task: %s"
+                % "; ".join(
+                    "%s (%s)" % (rel, ", ".join(C.BUNDLE_PROJECTIONS[rel]))
+                    for rel in projected
+                )
+            )
     code, detail = C.git_state(root)
     if code:
         warnings.append(
@@ -1290,6 +1380,42 @@ def _pass_problems(root, task, probe=False):
                 "with evidence; unresolved disagreement is ESCALATE, never a "
                 "silent override" % latest["blocking_count"]
             )
+        else:
+            # Runs on a probe too. Gating it on `not probe` suppressed only the
+            # REPORT — a probe's blockers never gate the close (see cmd_close)
+            # — so an ESCALATE's attestation omitted the single objection PASS
+            # would have raised, while pass_blockers is documented as "what
+            # CGEL could not have certified" and is the useful half of a
+            # non-PASS record.
+            #
+            # The re-roll: a blocking run followed by a clean one with NOTHING
+            # changed in between. The verifier is a model, so re-running it
+            # unchanged is a dice roll, and "run it until it agrees" is the
+            # cheapest way past the only judgement in the pipeline.
+            #
+            # Anchored on the LAST blocking run, not the previous record:
+            # blocking -> clean -> clean would otherwise launder itself in two
+            # steps. Both measures must be unmoved — diff_digest catches a
+            # Bash-applied fix, which never advances edit_seq.
+            blocked_runs = [
+                r for r in semantic if r.get("blocking_count", 0) > 0
+            ]
+            if blocked_runs and blocked_runs[-1] is not latest:
+                prior = blocked_runs[-1]
+                unchanged_edits = latest.get("edit_seq", 0) <= prior.get(
+                    "edit_seq", 0
+                )
+                unchanged_tree = (latest.get("workspace") or {}).get(
+                    "diff_digest"
+                ) == (prior.get("workspace") or {}).get("diff_digest")
+                if unchanged_edits and unchanged_tree:
+                    problems.append(
+                        "a blocking semantic finding went clean with no "
+                        "workspace change between the two verifier runs — "
+                        "re-running the verifier is not a fix. Change the "
+                        "code, or challenge once with evidence and ESCALATE "
+                        "if the disagreement stands"
+                    )
     return problems
 
 
@@ -1393,6 +1519,18 @@ def cmd_check_doctor(args):
             "DOCTOR DENIED — no checks registered",
             "cgel: an empty registry measures nothing; add checks with "
             "`cgel check add`.",
+        )
+    # doctor runs every check twice — once in an empty directory, once here —
+    # so what it can conclude depends on this project being what it looks
+    # like. If the workspace binding is dead, say so before the verdict
+    # rather than let a clean report imply more than it proves.
+    inert_code, inert_detail = C.git_state(root)
+    if inert_code:
+        print(
+            "cgel: the workspace binding is inert here (%s) — the checks below "
+            "were still run, but evidence they produce cannot go stale."
+            % inert_detail,
+            file=sys.stderr,
         )
     vacuous, broken, unknown, malformed = [], [], [], []
     for check_id in sorted(checks):
@@ -1753,6 +1891,37 @@ def cmd_semantic(args):
     return ok(line)
 
 
+def _evidence_is_inert(record):
+    """Was this evidence recorded while the workspace binding was dead?
+
+    One predicate, two surfaces (`cgel audit` and the attestation's
+    degradations). They said the same thing in two places, which is exactly
+    how two surfaces come to disagree about what `inert` means. Pre-upgrade
+    records carry no `degraded` key, so the constant is checked too.
+    """
+    workspace = record.get("workspace") or {}
+    return bool(workspace.get("degraded")) or workspace.get("diff_digest") == "no-git"
+
+
+def _degradations(root, tdir):
+    """Controls that were not fully running while this task ran."""
+    out = []
+    code, _ = C.git_state(root)
+    if code:
+        out.append("workspace-binding-inert: %s" % code)
+    evidence = [
+        r
+        for r in C.read_jsonl(os.path.join(tdir, C.EVIDENCE_FILE))
+        if r.get("type") == "evidence"
+    ]
+    inert = sum(1 for r in evidence if _evidence_is_inert(r))
+    if inert:
+        out.append(
+            "evidence-recorded-with-inert-workspace: %d/%d" % (inert, len(evidence))
+        )
+    return out
+
+
 def _build_attestation(root, task):
     """Sanitized: ids, statuses, digests — no raw output, no logs."""
     sealed = task["sealed"]
@@ -1818,6 +1987,11 @@ def _build_attestation(root, task):
         "terminal_reason": state.get("terminal_reason"),
         "pass_blockers": state.get("pass_blockers"),
         "user_sentence": state.get("user_sentence"),
+        # Controls that were not fully running. Recorded, never gating: the
+        # point is to kill the silence, not to add a refusal the user cannot
+        # act on. An attestation that says PASS while a control was inert is
+        # honest; one that says PASS and hides it is not.
+        "degradations": _degradations(root, tdir),
         "created_at": C.utc_now(),
     }
 
@@ -2400,7 +2574,7 @@ _CLOSE_OPENING = {
 }
 
 
-def _close_sentence(task_id, status, reason, blockers):
+def _close_sentence(status, reason, blockers):
     """One plain sentence for the user, per terminal status.
 
     Model-authored text lands in it, so it is defanged: newlines and
@@ -2476,7 +2650,7 @@ def cmd_close(args):
         for problem in blockers:
             print("  - %s" % problem, file=sys.stderr)
 
-    sentence = _close_sentence(task_id, args.as_status, reason, blockers)
+    sentence = _close_sentence(args.as_status, reason, blockers)
 
     state = dict(task["state"])
     state["lifecycle"] = "TERMINAL"

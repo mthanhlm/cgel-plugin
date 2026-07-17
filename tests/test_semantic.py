@@ -229,6 +229,91 @@ class SemanticTestCase(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("blocking semantic finding", err)
 
+    def test_a_blocking_finding_cannot_be_erased_by_re_running_the_verifier(self):
+        """The re-roll. The verifier is a model, so re-running it unchanged is
+        a dice roll, and "run it until it agrees" is the cheapest way past the
+        only judgement in the pipeline.
+
+        This test exists because the README claimed this control before any
+        code implemented it — the verifier caught the false row on this very
+        task, which is exactly the defect the release exists to remove.
+        """
+        self.seal()
+        self.findings([{"rule_id": "SEC-1", "status": "fail", "reason": "leak"}])
+        self.cli("semantic", "record")
+        self.cli("verify", "ok-check")
+        code, _, err = self.cli("close", "--as", "PASS", "--reason", "done")
+        self.assertEqual(code, 1)
+        self.assertIn("blocking semantic finding", err)
+
+        # Re-run the verifier, change nothing, get a clean answer.
+        self.findings([{"rule_id": "SEC-1", "status": "pass", "reason": "looks fine now"}])
+        self.cli("semantic", "record")
+        self.cli("verify", "ok-check")
+        code, _, err = self.cli("close", "--as", "PASS", "--reason", "done")
+        self.assertEqual(code, 1, "a re-roll with no workspace change closed PASS")
+        self.assertIn("no workspace change between the two verifier runs", err)
+
+    def test_the_re_roll_guard_does_not_launder_itself_in_two_steps(self):
+        # Anchored on the LAST BLOCKING run, not the previous record:
+        # blocking -> clean -> clean would otherwise walk past it, because by
+        # the third run the immediately prior record is already clean.
+        self.seal()
+        self.findings([{"rule_id": "SEC-1", "status": "fail", "reason": "leak"}])
+        self.cli("semantic", "record")
+        for _ in range(2):
+            self.findings([{"rule_id": "SEC-1", "status": "pass", "reason": "fine"}])
+            self.cli("semantic", "record")
+        self.cli("verify", "ok-check")
+        code, _, err = self.cli("close", "--as", "PASS", "--reason", "done")
+        self.assertEqual(code, 1)
+        self.assertIn("no workspace change between the two verifier runs", err)
+
+    def test_a_real_fix_clears_a_blocking_finding(self):
+        # The guard must not wedge the normal path: fix the code, re-run, pass.
+        self.seal()
+        self.findings([{"rule_id": "SEC-1", "status": "fail", "reason": "leak"}])
+        self.cli("semantic", "record")
+        with open(os.path.join(self.repo, "src", "app.py"), "a") as fh:
+            fh.write("# the actual fix\n")  # the workspace really moved
+        self.findings([{"rule_id": "SEC-1", "status": "pass", "reason": "fixed"}])
+        self.cli("semantic", "record")
+        self.cli("verify", "ok-check")
+        code, out, err = self.cli("close", "--as", "PASS", "--reason", "fixed the leak")
+        self.assertEqual(code, 0, err)
+        self.assertIn("CLOSE OK", decision_line(out))
+
+    def test_a_non_pass_close_reports_the_re_roll_without_refusing(self):
+        """The guard gates PASS; ESCALATE stays reachable — the loop always
+        comes to rest. But a non-PASS close REPORTS what PASS would have
+        objected to, and a re-rolled finding is the single most useful thing
+        such a record can carry.
+
+        The guard was first written behind `elif not probe`, which suppressed
+        only the report (a probe's blockers never gate the close), so an
+        ESCALATE's attestation silently omitted the objection while
+        pass_blockers is documented as "what CGEL could not have certified".
+        """
+        self.seal()
+        self.findings([{"rule_id": "SEC-1", "status": "fail", "reason": "leak"}])
+        self.cli("semantic", "record")
+        self.findings([{"rule_id": "SEC-1", "status": "pass", "reason": "fine"}])
+        self.cli("semantic", "record")
+        code, out, err = self.cli(
+            "close", "--as", "ESCALATE", "--reason", "the verifier and I disagree"
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("could not have certified", err)
+        self.assertIn("no workspace change between the two verifier runs", err)
+
+        store = os.path.join(self.state, os.listdir(self.state)[0], "TASK-S1")
+        with open(os.path.join(store, "attestation", "attestation.json")) as fh:
+            att = json.load(fh)
+        self.assertTrue(
+            any("verifier runs" in b for b in att["pass_blockers"]),
+            "the attestation omitted the objection PASS would have raised",
+        )
+
     def test_semantic_pass_then_close_pass_exports_attestation(self):
         self.seal()
         self.findings(

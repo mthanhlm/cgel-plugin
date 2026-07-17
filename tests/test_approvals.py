@@ -534,6 +534,33 @@ class ApprovalTestCase(unittest.TestCase):
             code, _, _ = self.gate(command)
             self.assertEqual(code, 0, command)
 
+    def test_dash_c_roots_at_the_session_directory_not_the_hook_process(self):
+        """`-C` is relative to the SESSION's directory (payload["cwd"]), not to
+        wherever the harness spawned this hook process.
+
+        The discriminator has to observe WHICH project governed, not merely
+        that something denied. `test_dash_c_does_not_walk_past_the_gate`
+        cannot: run_hook sets no process cwd, so a mis-rooted `-C .` lands on
+        the plugin's own checkout — itself a CGEL project — and returns 2 from
+        the correct path and the broken path alike.
+
+        So turn the gate OFF in the fixture repo. Standing aside then proves
+        the fixture's config was read; denying proves it was not. That is
+        also exactly the bypass: root at the wrong project, inherit its
+        `approval_gate: off`, and the gate waves the seal through.
+        """
+        self.write_transcript()  # no approval recorded
+        with open(
+            os.path.join(self.repo, ".cgel", "config.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump({"approval_gate": "off"}, fh)
+        code, _, _ = self.gate("cgel -C . seal T-1 --digest %s" % DIGEST)
+        self.assertEqual(
+            code, 0,
+            "`-C .` did not root at the session's directory: the fixture's "
+            "approval_gate:off was not read, so some other project governed",
+        )
+
     def test_dash_c_approval_binds_the_same_as_without_it(self):
         command = "cgel -C . seal TASK-A1 --digest %s" % DIGEST
         self.write_transcript(

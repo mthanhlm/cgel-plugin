@@ -19,8 +19,26 @@ in force. If it is not required, skip to step 3.
 
 Launch the `cgel:verifier` subagent (it is read-only by construction —
 never hand it write tools). Give it: the task goal, the changed files, the
-sealed scope, and the rule ids from `cgel rules`. It returns a findings
-JSON object.
+sealed scope, the rule ids from `cgel rules`, and **the diff**:
+
+```
+git diff HEAD -- <the changed files>     # plus `git diff --cached`, and the
+                                         # body of any new file git does not
+                                         # yet track
+```
+
+Paste the diff into the prompt. It holds no Bash tool, so it cannot obtain
+one for itself — if you do not send it, it does not exist.
+
+This matters more than it looks. Rules like CGEL-IMPACT-1 and
+CGEL-COMMENT-1 are defined over the CHANGE ("every symbol *this change*
+renamed", "the comments *in the change*"). Handed only a file list, the
+verifier reviews each file's entire history and reports on that — which
+reads exactly like a real review and is not one. If the diff is genuinely
+unavailable, say so in the prompt in those words; the verifier fails closed
+on a missing input rather than certifying what it could not see.
+
+It returns a findings JSON object.
 
 Write that JSON verbatim to `.task/findings.json` (always writable), then:
 

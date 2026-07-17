@@ -122,8 +122,16 @@ class InertWorkspaceTestCase(FailVisibleFixture):
         self.assertIn("1 of 1 evidence record(s)", err)
 
     def test_doctor_reports_the_git_state_too(self):
+        # Written first asserting only `code == 0`, which named a behaviour
+        # nothing implemented — cmd_check_doctor never called git_state. A
+        # test for a feature that does not exist cannot fail, and in the very
+        # phase whose thesis is "no green over a control that is not running"
+        # that is the defect itself. The warning exists now, and this asserts
+        # it.
         code, out, err = self.cli("check", "doctor")
         self.assertEqual(code, 0, err)
+        self.assertIn("workspace binding is inert", err)
+        self.assertIn("cannot go stale", err)
 
     def test_the_no_git_constants_are_unchanged(self):
         # Load-bearing: _evidence_problem compares diff_digest for EQUALITY,
@@ -280,6 +288,13 @@ class DoctorDegradedTestCase(FailVisibleFixture):
         self.assertEqual(code, 0, err)
         self.assertIn("DOCTOR OK", decision_line(out))
         self.assertNotIn("unknown", decision_line(out))
+
+    def test_doctor_does_not_warn_about_git_on_a_live_work_tree(self):
+        # The other half: a warning that fires everywhere is noise, and noise
+        # is how a diagnostic gets ignored.
+        code, out, err = self.cli("check", "doctor")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("workspace binding is inert", err)
 
 
 if __name__ == "__main__":

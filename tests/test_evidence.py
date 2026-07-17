@@ -29,6 +29,30 @@ REGISTRY = {
             "command": "sh -c 'echo FAILED: assertion broke; exit 1'",
             "kind": "test",
         },
+        # A real linter emitting cp1252 on a UTF-8 locale. Before the bytes
+        # capture this raised UnicodeDecodeError out of _run_check, past every
+        # handler, before chain_append — no evidence, no decision line, and
+        # nothing recording that a record was missing.
+        "non-utf8-check": {
+            "command": (
+                "python3 -c \"import sys; "
+                "sys.stdout.buffer.write(b'FAILED: caf\\xe9 \\xff\\xfe broke\\n'); "
+                'sys.exit(1)"'
+            ),
+            "kind": "test",
+        },
+        "slow-check": {
+            "command": "sh -c 'echo starting up; sleep 30'",
+            "timeout_seconds": 1,
+            "kind": "test",
+        },
+        "loud-check": {
+            "command": (
+                "python3 -c \"import sys; "
+                "sys.stdout.write('x' * 4000000); sys.exit(1)\""
+            ),
+            "kind": "test",
+        },
     }
 }
 
@@ -93,6 +117,83 @@ class EvidenceTestCase(unittest.TestCase):
         paths = [m["path"] for m in bundle["members"]]
         self.assertIn(".cgel/registry.json", paths)
         self.assertTrue(sealed["workspace"]["base_revision"] != "no-git")
+
+    def records(self):
+        with open(os.path.join(self.task_store(), "evidence.jsonl")) as fh:
+            return [json.loads(l) for l in fh if l.strip()]
+
+    # ---------------------------------------- the runner is total (must-fix #4)
+    #
+    # The property under test is not "these four inputs are handled". It is
+    # that _run_check ALWAYS reaches chain_append: a verification that leaves
+    # no record is the one failure this pipeline cannot detect afterwards,
+    # because there is no record saying a record is missing.
+
+    def test_non_utf8_check_output_still_records_evidence(self):
+        self.seal()
+        code, out, err = self.cli("verify", "non-utf8-check")
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("VERIFY FAIL check=non-utf8-check", decision_line(out))
+        self.assertIn("evidence=sha256:", decision_line(out))
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(len(self.records()), 1)
+        code, out, err = self.cli("audit")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("chain=intact", decision_line(out))
+
+    def test_undecodable_output_is_replacement_decoded_and_json_safe(self):
+        # errors="replace", never surrogateescape: a lone surrogate would make
+        # canonical_json raise at chain_append and lose the record we just
+        # fought to keep.
+        self.seal()
+        self.cli("verify", "non-utf8-check")
+        rec = self.records()[0]
+        self.assertIn("�", rec["output"]["summary"])
+        json.dumps(rec)  # must not raise
+
+    def test_timeout_records_the_partial_output_not_a_bytes_repr(self):
+        self.seal()
+        code, out, err = self.cli("verify", "slow-check")
+        self.assertEqual(code, 1, out + err)
+        rec = self.records()[0]
+        self.assertEqual(rec["result"]["failure_kind"], "timeout")
+        self.assertIsNone(rec["result"]["exit_code"])
+        summary = rec["output"]["summary"]
+        self.assertIn("starting up", summary)
+        self.assertIn("[timeout after 1s]", summary)
+        # TimeoutExpired.stdout is bytes; formatting it into a %s used to
+        # stringify a bytes repr into the record.
+        self.assertNotIn("b'", summary)
+
+    def test_oversized_output_is_capped_and_says_so(self):
+        # bytes is what the check PRODUCED; the summary is what was RETAINED.
+        # Recording only the retained size would silently redefine the field.
+        self.seal()
+        code, out, err = self.cli("verify", "loud-check")
+        self.assertEqual(code, 1, out + err)
+        rec = self.records()[0]
+        self.assertEqual(rec["output"]["bytes"], 4000000)
+        self.assertTrue(rec["output"]["truncated"])
+        self.assertLess(len(rec["output"]["summary"]), 2000)
+        self.assertTrue(rec["chain"]["hash"].startswith("sha256:"))
+
+    def test_harness_error_records_evidence_rather_than_vanishing(self):
+        # A registry the runner cannot use at all. Sealed with the bad value in
+        # place, so the bundle matches and we reach _run_check.
+        registry = json.loads(json.dumps(REGISTRY))
+        registry["checks"]["ok-check"]["timeout_seconds"] = "abc"
+        self.write_json(".cgel/registry.json", registry)
+        self.seal()
+        code, out, err = self.cli("verify", "ok-check")
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("VERIFY FAIL check=ok-check", decision_line(out))
+        self.assertNotIn("Traceback", err)
+        rec = self.records()[0]
+        self.assertEqual(rec["result"]["status"], "fail")
+        self.assertEqual(rec["result"]["failure_kind"], "harness_error")
+        # A broken runner is not the project's regression: it must not be
+        # fingerprinted, or the default-same guard reads it as one.
+        self.assertIsNone(rec["result"]["diagnostic_fingerprint"])
 
     def test_verify_pass_records_bound_evidence(self):
         self.seal()

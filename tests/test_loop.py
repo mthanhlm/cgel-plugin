@@ -383,6 +383,46 @@ class SymlinkTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertFalse(os.path.exists(self.link))
 
+    # ------------------------------------------- the link can succeed and
+    # the CLI still be unreachable (~/.local/bin is not on PATH by default
+    # on stock macOS/zsh). The model then sees `command not found` and
+    # improvises around the gate — so say so, with the absolute path.
+
+    def test_path_miss_injects_the_absolute_cli_path(self):
+        os.makedirs(os.path.join(self.home, ".cgel"))
+        empty = tempfile.mkdtemp(prefix="cgel-nopath-")
+        self.addCleanup(shutil.rmtree, empty, True)
+        code, out, err = self.run_ss(
+            {"PATH": empty, "CGEL_STATE_DIR": tempfile.mkdtemp(prefix="cgel-st-")}
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("NOT on this session's PATH", out)
+        self.assertIn(os.path.join("bin", "cgel"), out)
+
+    def test_no_path_notice_when_cgel_is_reachable(self):
+        # The notice must not become always-on noise.
+        os.makedirs(os.path.join(self.home, ".cgel"))
+        bindir = tempfile.mkdtemp(prefix="cgel-bin-")
+        self.addCleanup(shutil.rmtree, bindir, True)
+        shim = os.path.join(bindir, "cgel")
+        with open(shim, "w") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")
+        os.chmod(shim, 0o755)
+        code, out, err = self.run_ss(
+            {"PATH": bindir, "CGEL_STATE_DIR": tempfile.mkdtemp(prefix="cgel-st-")}
+        )
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("NOT on this session's PATH", out)
+
+    def test_path_notice_is_silent_outside_a_cgel_project(self):
+        # CGEL is opt-in per project; an unreachable CLI is not a reason to
+        # start speaking in someone else's repo.
+        empty = tempfile.mkdtemp(prefix="cgel-nopath-")
+        self.addCleanup(shutil.rmtree, empty, True)
+        code, out, err = self.run_ss({"PATH": empty})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.strip(), "")
+
 
 if __name__ == "__main__":
     unittest.main()

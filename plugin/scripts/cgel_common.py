@@ -363,6 +363,14 @@ def open_tasks(repo_root):
         except Exception as exc:
             _debug("open_tasks:%s" % name, exc)
             continue
+        if not isinstance(state, dict) or not isinstance(sealed, dict):
+            # Valid JSON of the wrong shape. This is an enumerator on the read
+            # side: it cannot refuse, so it skips — and every writer that MUST
+            # refuse (seal's stale-directory check) does its own guarding.
+            # Without this the .get() below raised out of every verb that lists
+            # tasks, including the seal that was trying to report the problem.
+            _debug("open_tasks:%s" % name, TypeError("state.json is not an object"))
+            continue
         if state.get("lifecycle") not in TASK_LIFECYCLES:
             continue
         if state.get("task_id") and state["task_id"] != name:
@@ -553,11 +561,18 @@ def bundle_diff(sealed_members, current_members):
 # ------------------------------------------------------ workspace snapshot
 
 def _git(repo_root, *args):
+    # text=True decodes strictly: a filename or commit message this locale
+    # cannot decode raised UnicodeDecodeError inside workspace_snapshot, whose
+    # `except Exception` then returned the "no-git" constant — a digest that
+    # compares equal to itself forever, so evidence never went stale. A decode
+    # must never be able to disable a control. quotePath is pinned so a user's
+    # git config cannot change what the callers' parsers see.
     return subprocess.run(
-        ["git"] + list(args),
+        ["git", "-c", "core.quotePath=true"] + list(args),
         cwd=repo_root,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
 

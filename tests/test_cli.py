@@ -184,6 +184,71 @@ class CliTestCase(unittest.TestCase):
             os.path.isfile(os.path.join(self.repo, ".task", "contract.json"))
         )
 
+    # ------------------------------------------- the output contract holds
+    #
+    # bin/cgel's docstring promises "one machine-parseable decision line on
+    # stdout (last line)". Every caller — the skills, the hooks, these tests —
+    # reads it. An unhandled exception used to break that promise silently:
+    # a traceback on stderr, nothing on stdout, and a caller unable to tell
+    # "denied" from "crashed".
+
+    def _wedge(self):
+        """A registry shape that reaches a live AttributeError inside
+        _draft_warnings: (registry.get("checks") or {}).keys() on a str."""
+        with open(
+            os.path.join(self.repo, ".cgel", "registry.json"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write('{"checks": "oops"}')
+        self.write_contract(CONTRACT)
+
+    def test_an_internal_error_still_emits_a_decision_line(self):
+        self._wedge()
+        code, out, err = self.cli("summary")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(decision_line(out), "ERROR internal-error")
+        self.assertNotIn("Traceback", out)
+        self.assertIn("AttributeError", err)
+
+    def test_internal_error_traceback_only_under_debug(self):
+        self._wedge()
+        code, out, err = run_cli(
+            ["summary"],
+            cwd=self.repo,
+            env={"CGEL_STATE_DIR": self.state, "CGEL_DEBUG": "1"},
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(decision_line(out), "ERROR internal-error")
+        self.assertIn("Traceback", err)
+
+    def test_usage_exit_survives_the_guard(self):
+        # SystemExit must be re-raised, not swallowed into internal-error:
+        # require_repo_root's exit(3) and argparse's own exits are the CLI's
+        # documented usage contract.
+        code, out, err = run_cli(["status"], cwd=tempfile.gettempdir(), env=self.env)
+        self.assertEqual(code, 3, out + err)
+        self.assertNotIn("ERROR internal-error", out)
+
+    def test_seal_refuses_over_an_unreadable_previous_run(self):
+        # Sealing an id whose previous run cannot be archived used to proceed
+        # silently: the new task inherited the old evidence chain and its spent
+        # budgets. This must be a refusal the user can act on — and it must be
+        # SEAL DENIED, not ERROR internal-error: the main() guard is a floor,
+        # not a substitute for handling a case you know about.
+        self.write_contract(CONTRACT)
+        digest = self.summary_digest()
+        self.cli("seal", "TASK-C1", "--digest", digest)
+        self.cli("close", "--as", "ABORT")
+        store = os.path.join(self.state, os.listdir(self.state)[0], "TASK-C1")
+        with open(os.path.join(store, "state.json"), "w", encoding="utf-8") as fh:
+            fh.write("[]")  # valid JSON, wrong shape
+        self.write_contract(CONTRACT)
+        digest = self.summary_digest()
+        code, out, err = self.cli("seal", "TASK-C1", "--digest", digest)
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("SEAL DENIED — stale task directory", decision_line(out))
+        self.assertNotIn("ERROR internal-error", out)
+        self.assertIn("not a JSON object", err)
+
     def test_close_pass_denied_in_phase0(self):
         self.write_contract(CONTRACT)
         digest = self.summary_digest()

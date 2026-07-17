@@ -1,9 +1,10 @@
 """CGEL SessionStart — standing rules + resume protocol + CLI PATH setup.
 
 On session start/resume:
-  1. ensures `cgel` is reachable on PATH (symlink ~/.local/bin/cgel ->
-     this plugin's bin/cgel; POSIX only; opt-out CGEL_NO_SYMLINK=1;
-     never overwrites a file it does not own),
+  1. links `cgel` into ~/.local/bin (-> this plugin's bin/cgel; POSIX only;
+     opt-out CGEL_NO_SYMLINK=1; never overwrites a file it does not own),
+     and — because ~/.local/bin is not on PATH by default everywhere —
+     injects the absolute path when `cgel` is still unreachable,
   2. injects the standing git-attribution rule as additionalContext, so
      it is in force for every commit, not just those inside a task,
   3. injects a compact state summary from the runtime state store, so a
@@ -16,6 +17,7 @@ Inside one it always speaks, task or not. Never blocks (exit 0 always).
 
 import json
 import os
+import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,16 +38,38 @@ The message itself should just describe the change (subject + body), nothing
 else."""
 
 
-def ensure_cli_symlink():
-    """Idempotent. Creates or repairs ~/.local/bin/cgel only when the link
-    is missing or clearly points at a (stale) cgel plugin install."""
-    if os.name == "nt" or os.environ.get("CGEL_NO_SYMLINK"):
-        return
+def cli_target():
+    """Absolute path to this plugin's bin/cgel, or None if it is not there."""
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(
         os.path.dirname(os.path.realpath(__file__))
     )
     target = os.path.join(plugin_root, "bin", "cgel")
-    if not os.path.isfile(target):
+    return target if os.path.isfile(target) else None
+
+
+def path_notice(target):
+    """Text to inject when `cgel` is installed but unreachable, else None.
+
+    ~/.local/bin is not on PATH by default on stock macOS/zsh, so the symlink
+    above can succeed and every `cgel` call still fail. The failure mode was
+    illegible: the model saw `command not found` and improvised around the
+    gate. Handing it the absolute path means a task runs either way."""
+    if target is None or shutil.which("cgel"):
+        return None
+    return (
+        "CGEL: the `cgel` CLI is installed but NOT on this session's PATH.\n"
+        "Invoke it by absolute path: %s\n"
+        "To fix it for future sessions, add ~/.local/bin to PATH "
+        '(e.g. export PATH="$HOME/.local/bin:$PATH").' % target
+    )
+
+
+def ensure_cli_symlink(target):
+    """Idempotent. Creates or repairs ~/.local/bin/cgel only when the link
+    is missing or clearly points at a (stale) cgel plugin install."""
+    if os.name == "nt" or os.environ.get("CGEL_NO_SYMLINK"):
+        return
+    if target is None:
         return
     link = os.path.join(os.path.expanduser("~"), ".local", "bin", "cgel")
     try:
@@ -157,7 +181,8 @@ def emit(context):
 
 
 def main():
-    ensure_cli_symlink()
+    target = cli_target()
+    ensure_cli_symlink(target)
     try:
         payload = json.load(sys.stdin)
     except Exception as exc:
@@ -169,6 +194,12 @@ def main():
         return 0
 
     sections = []
+    # First: a model that cannot run `cgel` cannot do anything else here, and
+    # it must learn that from us rather than from `command not found`. Below
+    # the repo_root check, so the hook stays silent outside a CGEL project.
+    notice = path_notice(target)
+    if notice:
+        sections.append(notice)
     if C.read_config(repo_root).get("ai_attribution_guard") != "off":
         sections.append(GIT_ATTRIBUTION_RULE)
     tasks = C.open_tasks(repo_root)

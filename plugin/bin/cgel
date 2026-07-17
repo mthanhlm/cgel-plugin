@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "scripts"))
@@ -333,14 +334,33 @@ def _semantic_requirement(contract, rules):
 def _dirty_paths_intersecting_scope(repo_root, allowed_patterns):
     try:
         proc = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=all"],
+            # quotePath is pinned so a user's git config cannot change what
+            # this parser sees; errors="replace" so a path this locale cannot
+            # decode degrades one path, never the whole guard.
+            [
+                "git",
+                "-c",
+                "core.quotePath=true",
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+            ],
             cwd=repo_root,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Returning [] means "nothing uncommitted", which is exactly what a
+        # caller wants to hear and the one thing we cannot honestly say. Say
+        # out loud that the guard did not run.
         C._debug("seal:git-status", exc)
+        print(
+            "cgel: git status could not be read (%s) — the uncommitted-work "
+            "guard did NOT run for this command." % exc,
+            file=sys.stderr,
+        )
         return []
     if proc.returncode != 0:
         return []  # not a git repo — nothing to protect via git
@@ -361,17 +381,27 @@ def _dirty_paths_intersecting_scope(repo_root, allowed_patterns):
 
 def _rotate_closed_task_dir(task_dir, task_id):
     """A fresh seal of a previously closed id must not inherit that run's
-    spent budgets or chains — archive the old directory instead."""
+    spent budgets or chains — archive the old directory instead.
+
+    Returns None when the id is clear to seal, or a reason string when it is
+    not. Every failure here used to return None, which reads as "clear" — so
+    an unreadable or unmovable previous run was silently inherited: its
+    evidence chain became the new task's, and its spent budgets came with it.
+    A seal that cannot prove the id is clean must fail closed."""
     state_path = os.path.join(task_dir, "state.json")
     if not os.path.isfile(state_path):
-        return
+        return None
     try:
         state = C.load_json(state_path)
     except Exception as exc:
         C._debug("seal:rotate", exc)
-        return
+        return "state.json in %s is unreadable (%s)" % (task_dir, exc)
+    if not isinstance(state, dict):
+        # Valid JSON of the wrong shape: state.get() below would raise, and
+        # before the main() guard that was a bare traceback at seal time.
+        return "state.json in %s is not a JSON object" % task_dir
     if state.get("lifecycle") in C.TASK_LIFECYCLES:
-        return  # still open — the reseal path owns this case
+        return None  # still open — the reseal path owns this case
     stamp = re.sub(r"[^0-9TZ]", "", state.get("closed_at") or C.utc_now())[:15]
     target = "%s-closed-%s" % (task_dir, stamp)
     suffix = 0
@@ -380,13 +410,18 @@ def _rotate_closed_task_dir(task_dir, task_id):
         target = "%s-closed-%s-%d" % (task_dir, stamp, suffix)
     try:
         os.rename(task_dir, target)
-        print(
-            "cgel: previous closed run of %s archived as %s."
-            % (task_id, os.path.basename(target)),
-            file=sys.stderr,
-        )
     except OSError as exc:
         C._debug("seal:rotate-rename", exc)
+        return "could not archive the previous closed run as %s (%s)" % (
+            os.path.basename(target),
+            exc,
+        )
+    print(
+        "cgel: previous closed run of %s archived as %s."
+        % (task_id, os.path.basename(target)),
+        file=sys.stderr,
+    )
+    return None
 
 
 def cmd_seal(args):
@@ -428,7 +463,16 @@ def cmd_seal(args):
     store = C.repo_state_dir(root)
     task_dir = os.path.join(store, task_id)
     if not reseal:
-        _rotate_closed_task_dir(task_dir, task_id)
+        rot_error = _rotate_closed_task_dir(task_dir, task_id)
+        if rot_error is not None:
+            return fail(
+                "SEAL DENIED — stale task directory for %s" % task_id,
+                "cgel: %s" % rot_error,
+                "cgel: a previous run of this id left state that cannot be "
+                "archived; sealing now would inherit its evidence chain and "
+                "spent budgets. Move or repair %s, or seal under a new task "
+                "id." % task_dir,
+            )
 
     dirty = _dirty_paths_intersecting_scope(root, c["scope"]["allowed"])
     if reseal:
@@ -589,12 +633,48 @@ def _classify_failure(check, exit_code, timed_out, output):
     return kind, subject, fingerprint
 
 
+# A check's output is captured to a temp file as BYTES and decoded with
+# errors="replace" at the end. Two reasons, both load-bearing:
+#   - text=True made a check that emits non-UTF-8 raise UnicodeDecodeError
+#     (a ValueError) out of _run_check, past every handler, before
+#     chain_append — recording no evidence at all, and leaving no record
+#     saying a record was missing.
+#   - a check is free to produce gigabytes; capture_output holds it all in
+#     memory. The cap keeps the head (the failure is usually announced) and
+#     the tail (the summary line), and records what was produced, not what
+#     was retained.
+MAX_CAPTURE_BYTES = 1 << 20
+CAPTURE_HEAD_BYTES = 256 << 10
+CAPTURE_TAIL_BYTES = MAX_CAPTURE_BYTES - CAPTURE_HEAD_BYTES
+
+
+def _read_capture(fh):
+    """Read a check's capture file. Returns (text, total_bytes, truncated).
+
+    total_bytes is what the check PRODUCED; text may be shorter."""
+    fh.flush()
+    total = fh.seek(0, os.SEEK_END)
+    if total <= MAX_CAPTURE_BYTES:
+        fh.seek(0)
+        raw = fh.read()
+        truncated = False
+    else:
+        fh.seek(0)
+        head = fh.read(CAPTURE_HEAD_BYTES)
+        fh.seek(total - CAPTURE_TAIL_BYTES)
+        tail = fh.read(CAPTURE_TAIL_BYTES)
+        dropped = total - CAPTURE_HEAD_BYTES - CAPTURE_TAIL_BYTES
+        raw = head + b"\n... [%d bytes dropped] ...\n" % dropped + tail
+        truncated = True
+    return raw.decode("utf-8", "replace"), total, truncated
+
+
 def _summarize(output, head=400, tail=900):
     if len(output) <= head + tail:
         return output
     return (
         output[:head]
-        + "\n... [%d bytes truncated] ...\n" % (len(output) - head - tail)
+        + "\n... [%d characters truncated] ...\n" % (len(output) - head - tail)
         + output[-tail:]
     )
 
@@ -639,29 +719,58 @@ def _run_check(root, task, check_id, registry, registry_digest):
     want_exit = (check.get("success") or {}).get("exit_code", 0)
     started = C.utc_now()
     timed_out = False
+    harness_error = None
+    # _run_check must be TOTAL: every path below reaches chain_append. An
+    # exception escaping here is an unrecorded verification, which is the one
+    # failure this pipeline cannot detect after the fact.
     try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            cwd=workdir,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        exit_code = proc.returncode
-        output = (proc.stdout or "") + (proc.stderr or "")
-    except subprocess.TimeoutExpired as exc:
-        timed_out = True
+        with tempfile.TemporaryFile() as cap:
+            try:
+                proc = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=workdir,
+                    stdout=cap,
+                    stderr=subprocess.STDOUT,
+                    timeout=timeout,
+                )
+                exit_code = proc.returncode
+                output, total_bytes, truncated = _read_capture(cap)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                exit_code = None
+                output, total_bytes, truncated = _read_capture(cap)
+                output += "\n[timeout after %ss]" % timeout
+            except OSError as exc:
+                exit_code = 127
+                output = "spawn failed: %s" % exc
+                total_bytes = len(output.encode("utf-8", "replace"))
+                truncated = False
+    except Exception as exc:  # noqa: BLE001 — totality is the point
+        C._debug("verify:run", exc)
+        harness_error = exc
         exit_code = None
-        output = "%s\n[timeout after %ss]" % (exc.stdout or "", timeout)
-    except OSError as exc:
-        timed_out = False
-        exit_code = 127
-        output = "spawn failed: %s" % exc
+        truncated = False
+        output = (
+            "cgel: the check could not be run or its output could not be "
+            "captured: %s: %s" % (type(exc).__name__, exc)
+        )
+        total_bytes = len(output.encode("utf-8", "replace"))
 
-    status = "pass" if (not timed_out and exit_code == want_exit) else "fail"
+    status = (
+        "pass"
+        if (not timed_out and harness_error is None and exit_code == want_exit)
+        else "fail"
+    )
     failure_kind = failure_subject = fingerprint = None
-    if status == "fail":
+    if harness_error is not None:
+        # Not the project's failure — the harness's. Kept distinct so the
+        # default-same guard cannot read a broken runner as a real regression.
+        failure_kind = "harness_error"
+        failure_subject = (
+            "%s: %s" % (type(harness_error).__name__, harness_error)
+        )[:160]
+    elif status == "fail":
         failure_kind, failure_subject, fingerprint = _classify_failure(
             check, exit_code, timed_out, output
         )
@@ -682,8 +791,14 @@ def _run_check(root, task, check_id, registry, registry_digest):
             "diagnostic_fingerprint": fingerprint,
         },
         "output": {
+            # digest covers the RETAINED text; bytes is what the check
+            # PRODUCED. They diverge when the output was capped (truncated
+            # true) and on timeout, where the marker below is appended after
+            # capture. An absent `truncated` key means a record written
+            # before the cap existed, whose digest covers the whole output.
             "digest": C.sha256_bytes(output.encode("utf-8", "replace")),
-            "bytes": len(output),
+            "bytes": total_bytes,
+            "truncated": truncated,
             "summary": _summarize(output),
         },
         "started_at": started,
@@ -1051,7 +1166,8 @@ def _canary_passes(command, timeout, workdir_hint):
             shell=True,
             cwd=empty,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=max(1, min(timeout, 120)),
         )
     except subprocess.TimeoutExpired:
@@ -1083,7 +1199,8 @@ def _passes_in_tree(command, timeout, workdir, want_exit):
             shell=True,
             cwd=workdir,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=max(1, timeout),
         )
     except subprocess.TimeoutExpired:
@@ -1991,7 +2108,7 @@ def _add_contract_arg(parser):
     )
 
 
-def main():
+def _dispatch():
     parser = argparse.ArgumentParser(prog="cgel", add_help=True)
     sub = parser.add_subparsers(dest="command")
 
@@ -2169,6 +2286,38 @@ def main():
         print("ERROR usage")
         return 3
     return handlers[args.command](args)
+
+
+def main():
+    """Guarantee the output contract this file's docstring promises.
+
+    Every caller — the skills, the hooks, the tests — reads the last line of
+    stdout. An unhandled exception used to break that contract silently: a
+    traceback on stderr, nothing parseable on stdout, and a caller that
+    cannot tell "denied" from "crashed". SystemExit is re-raised so
+    require_repo_root's exit(3) and argparse's own exits are unchanged."""
+    try:
+        return _dispatch()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        print("cgel: interrupted.", file=sys.stderr)
+        print("ERROR interrupted")
+        return 1
+    except Exception as exc:  # noqa: BLE001 — the decision line is the contract
+        if os.environ.get("CGEL_DEBUG"):
+            traceback.print_exc()
+        else:
+            print(
+                "cgel: internal error: %s: %s" % (type(exc).__name__, exc),
+                file=sys.stderr,
+            )
+            print(
+                "cgel: re-run with CGEL_DEBUG=1 for the traceback.",
+                file=sys.stderr,
+            )
+        print("ERROR internal-error")
+        return 1
 
 
 if __name__ == "__main__":

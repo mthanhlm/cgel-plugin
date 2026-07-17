@@ -258,14 +258,18 @@ claude plugin marketplace add mthanhlm/cgel-plugin
 claude plugin install cgel@cgel
 ```
 
-The `cgel` CLI lands on your PATH automatically: on the first session
-after install, the SessionStart hook symlinks `~/.local/bin/cgel` to the
-plugin's `bin/cgel` (POSIX only; it never overwrites a file it does not
-own; opt out with `CGEL_NO_SYMLINK=1`). Manual fallback — same thing by
+The `cgel` CLI is linked into `~/.local/bin` automatically: on the first
+session after install, the SessionStart hook symlinks `~/.local/bin/cgel`
+to the plugin's `bin/cgel` (POSIX only; it never overwrites a file it does
+not own; opt out with `CGEL_NO_SYMLINK=1`). `~/.local/bin` is **not** on
+PATH by default on stock macOS/zsh — if `cgel` is not found after install,
+add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile. CGEL
+detects an unreachable link at session start and hands the model the
+absolute path, so a task runs either way. Manual fallback — same thing by
 hand:
 
 ```bash
-ln -s ~/.claude/plugins/marketplaces/cgel/bin/cgel ~/.local/bin/cgel
+ln -s ~/.claude/plugins/marketplaces/cgel/plugin/bin/cgel ~/.local/bin/cgel
 ```
 
 Requirements: Claude Code with plugin support, Python 3.8+ (stdlib only),

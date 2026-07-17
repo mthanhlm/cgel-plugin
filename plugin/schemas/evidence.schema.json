@@ -34,7 +34,7 @@
         "exit_code": {"type": ["integer", "null"]},
         "failure_kind": {
           "type": ["string", "null"],
-          "description": "command_unavailable | permission_denied | environment | timeout | build | compile | typecheck | lint | test_assertion | test_crash | security | scope_violation | contract_violation | semantic_rule | unknown"
+          "description": "command_unavailable | permission_denied | environment | timeout | build | compile | typecheck | lint | test_assertion | test_crash | security | scope_violation | contract_violation | semantic_rule | harness_error | unknown. harness_error means the check could not be run or its output could not be captured — the harness failed, not the project; it carries no diagnostic_fingerprint so the default-same guard cannot read it as a regression."
         },
         "failure_subject": {"type": ["string", "null"]},
         "diagnostic_fingerprint": {"type": ["string", "null"]}
@@ -45,7 +45,8 @@
       "required": ["digest"],
       "properties": {
         "digest": {"type": "string", "pattern": "^sha256:"},
-        "bytes": {"type": "integer"},
+        "bytes": {"type": "integer", "description": "total bytes the check PRODUCED, before any truncation — not the size of the retained text"},
+        "truncated": {"type": "boolean", "description": "true when the check produced more than the 1 MiB capture cap, so `digest` covers the retained head+tail, not the whole output. An ABSENT `truncated` means the record predates the cap and its digest covers the full output."},
         "summary": {"type": "string", "description": "head+tail truncated command output; full output exists only as a digest"}
       }
     },

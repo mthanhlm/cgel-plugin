@@ -40,6 +40,33 @@ class VacuousPassGuard(unittest.TestCase):
             self.assertGreater(len(read(name)), 400, "%s too short" % name)
 
 
+class InstallInstructionsResolve(unittest.TestCase):
+    """A README whose install command dangles is a first-run failure that
+    every new user hits and no test could see. The path is machine-checkable
+    against this repo, so check it."""
+
+    def test_the_documented_manual_symlink_path_exists_in_this_repo(self):
+        line = next(
+            l for l in read("README.md").splitlines() if l.strip().startswith("ln -s ")
+        )
+        src = line.split()[2]
+        marker = "marketplaces/cgel/"
+        self.assertIn(marker, src, "the documented link no longer names the install")
+        tail = src.split(marker, 1)[1]
+        self.assertTrue(
+            os.path.isfile(os.path.join(REPO_ROOT, tail)),
+            "README documents `ln -s ...%s` but this repo has no such file — "
+            "following the README yields a dangling symlink" % tail,
+        )
+
+    def test_readme_does_not_promise_automatic_path(self):
+        # The hook links into ~/.local/bin, which is not on PATH by default on
+        # stock macOS/zsh. "lands on your PATH automatically" was false there.
+        readme = read("README.md")
+        self.assertNotIn("lands on your PATH automatically", readme)
+        self.assertIn("not** on\nPATH by default", readme)
+
+
 class LicenseMatchesTheManifest(unittest.TestCase):
     def test_license_file_carries_mit_text(self):
         text = read("LICENSE")

@@ -355,8 +355,12 @@ cgel verify unit-tests --task TASK-2   # --task on every verb while two are open
 Kill switches: `CGEL_GATE=off`, `CGEL_GIT_GUARD=off`,
 `CGEL_APPROVAL_GATE=off` (env), or `.cgel/config.json` `{"gate": "off"}` /
 `{"git_guard": "off"}` / `{"approval_gate": "off"}`. Per-command
-destructive-git override typed by the user: `CGEL_GIT=allow git ...` — which
-also permits an attributed commit, if the user genuinely wants one.
+destructive-git override: `CGEL_GIT=allow git ...` — which also permits an
+attributed commit, if you genuinely want one. It exempts only the one command
+it prefixes, not the rest of the line. Honesty: this is a **string, not an
+identity**. It is meant for you to type, but nothing distinguishes you typing
+it from the model typing it — which is why no block message mentions it. It
+is a convenience for the user, not a boundary against the model.
 
 Governance-bundle churn: file digests are cached by mtime+size in the state
 store, and `.cgel/config.json` `{"bundle_exclude": ["glob", ...]}` drops

@@ -67,6 +67,57 @@ class InstallInstructionsResolve(unittest.TestCase):
         self.assertIn("not** on\nPATH by default", readme)
 
 
+class TheBypassIsNotAdvertisedToTheModel(unittest.TestCase):
+    """`CGEL_GIT=allow` is a plain string test, not an identity check. A
+    model that reads the prefix can type it as easily as a user can, so
+    naming it anywhere the model reads hands the blocked party the key.
+
+    It stays in the README (where the user reads) and in command_guard's own
+    source (where it is implemented and explained)."""
+
+    def _shipped_model_facing_files(self):
+        paths = []
+        for sub in ("skills", "agents", "commands", "rules"):
+            base = os.path.join(PLUGIN_ROOT, sub)
+            for root, _, files in os.walk(base):
+                for name in files:
+                    if name.endswith(".md"):
+                        paths.append(os.path.join(root, name))
+        return paths
+
+    def test_no_shipped_prose_advertises_the_git_bypass(self):
+        for path in self._shipped_model_facing_files():
+            with open(path, encoding="utf-8") as fh:
+                self.assertNotIn(
+                    "CGEL_GIT",
+                    fh.read(),
+                    "%s tells the model how to bypass the guard" % path,
+                )
+
+    def test_the_guard_only_names_the_bypass_where_it_implements_it(self):
+        with open(
+            os.path.join(PLUGIN_ROOT, "scripts", "command_guard.py"), encoding="utf-8"
+        ) as fh:
+            source = fh.read()
+        # The docstring explains it and APPROVAL_PREFIX implements it. What
+        # must never come back is a block message naming it: those are the
+        # strings the model reads at exactly the moment it wants a way out.
+        for line in source.splitlines():
+            if "CGEL guard [" in line:
+                self.assertNotIn("CGEL_GIT", line)
+
+    def test_readme_does_not_claim_the_bypass_is_an_identity(self):
+        # Prose wraps; assert on the claim, not on the line breaks.
+        readme = " ".join(read("README.md").split())
+        self.assertNotIn(
+            "override typed by the user",
+            readme,
+            "CGEL_GIT=allow is a plain string test — nothing tells a user's "
+            "keystrokes from the model's",
+        )
+        self.assertIn("string, not an identity", readme)
+
+
 class LicenseMatchesTheManifest(unittest.TestCase):
     def test_license_file_carries_mit_text(self):
         text = read("LICENSE")

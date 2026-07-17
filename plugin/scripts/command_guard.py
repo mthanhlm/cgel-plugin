@@ -1,9 +1,23 @@
 """CGEL PreToolUse guard for Bash — blocks destructive commands, and
 blocks AI attribution in authored commits/PRs.
 
-Safety gate -> fails CLOSED: unreadable payload blocks the call (exit 2).
-This is a guardrail on the raw command string, not a sandbox; indirect
-mutations (scripts, interpreters) are out of reach on Profile A hosts.
+Safety gate -> fails CLOSED inside a CGEL project: an unreadable payload, an
+unreadable/unwritable approvals ledger, or an internal error blocks the call
+(exit 2). Outside a CGEL project it stands aside, because CGEL is opt-in per
+project and a plugin that bricks every Bash call in every other repo is a
+worse failure than the one it is guarding against.
+
+Decisions are made on the INVOCATION, not on the command text: the line is
+resolved by cmdline.py, and each rule is judged against a resolved argv.
+Text-matching ran both ways — `git -C . push --force` bypassed every rule
+because the patterns anchored `git\\s+push`, and `grep -rn 'git push'` was
+blocked because the text contained the pattern. A segment cmdline cannot
+resolve keeps the blunt-regex verdict below, which is exactly the old
+behaviour: the tokenizer can sharpen a gate, never blind one.
+
+This is a guardrail, not a sandbox; indirect mutations (scripts,
+interpreters, a heredoc fed to a shell) are out of reach on Profile A hosts
+and always will be.
 
 A destructive command runs if the transcript carries the user's recorded
 AskUserQuestion approval quoting the exact command (see approvals.py) —
@@ -11,7 +25,12 @@ the approval both unblocks it and suppresses the permission prompt, so
 the user answers one readable question instead of retyping commands.
 The attribution rules have NO approval path: they are policy, not risk.
 
-Bypass, per command, typed by the USER: prefix `CGEL_GIT=allow `.
+The `CGEL_GIT=allow ` prefix exempts the ONE segment that carries it.
+It is documented for the user, and deliberately NOT named in any block
+message: `APPROVAL_PREFIX` is a plain string test, so a model that reads
+the message can type the prefix as easily as a human can. Telling the
+blocked party how to unblock itself is not a gate. The README carries it;
+the guard does not advertise it.
 Kill switches: env CGEL_GIT_GUARD=off, or .cgel/config.json
 {"git_guard": "off"}; attribution only: {"ai_attribution_guard": "off"}.
 """
@@ -24,6 +43,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import approvals
 import cgel_common as C
+import cmdline
 
 RULES = [
     (
@@ -101,6 +121,115 @@ ATTRIBUTION_RULES = [
 ]
 
 
+def _split_operands(args):
+    """(flags, operands) for a git subcommand's arguments.
+
+    Everything after a bare `--` is a pathspec, not a flag: `git checkout --
+    -f.txt` names a file, it does not pass -f. Deciding on flags-only is what
+    stops a filename from tripping a rule."""
+    if "--" in args:
+        cut = args.index("--")
+        return args[:cut], args[cut + 1 :]
+    return [a for a in args if a.startswith("-")], [
+        a for a in args if not a.startswith("-")
+    ]
+
+
+def _destructive(argv):
+    """(rule_id, reason) when this invocation is one of the eight, else None.
+
+    This is the same table as RULES, decided on the invocation instead of on
+    the text. `git -C . push --force` reaches it; `grep 'git push'` does not."""
+    sub, args = cmdline.git_parts(argv)
+    if sub is None:
+        return None
+    flags, operands = _split_operands(args)
+    if sub == "push":
+        forcing = [
+            f
+            for f in flags
+            if f == "-f"
+            or f == "--force"
+            or (f.startswith("--force=") )
+        ]
+        if forcing:
+            return "force-push", (
+                "git push --force rewrites remote history "
+                "(--force-with-lease and --force-if-includes are allowed)"
+            )
+        if "--delete" in flags or "-d" in flags:
+            return "remote-branch-delete", "deleting a remote branch"
+        if any(o.startswith(":") and len(o) > 1 for o in operands):
+            return "remote-branch-delete", "deleting a remote branch"
+        return None
+    if sub == "reset" and "--hard" in flags:
+        return "reset-hard", "git reset --hard discards local work"
+    if sub == "clean":
+        if any(f.startswith("-") and not f.startswith("--") and "f" in f for f in flags):
+            return "clean-force", "git clean -f deletes untracked files"
+        if "--force" in flags:
+            return "clean-force", "git clean --force deletes untracked files"
+        return None
+    if sub == "checkout" and "." in operands:
+        return "checkout-dot", "git checkout . discards uncommitted changes"
+    if sub == "restore" and "." in operands and "--staged" not in flags:
+        return "restore-worktree", "git restore . discards uncommitted changes"
+    if sub == "branch" and "-D" in flags:
+        return "branch-force-delete", "git branch -D discards unmerged work"
+    if sub == "stash" and operands and operands[0] in ("drop", "clear"):
+        return "stash-drop", "dropping stashes discards work"
+    return None
+
+
+def _is_push(argv):
+    return cmdline.git_parts(argv)[0] == "push"
+
+
+def _is_authoring(argv):
+    if cmdline.git_parts(argv)[0] == "commit":
+        return True
+    verb, sub, _ = cmdline.gh_parts(argv)
+    return verb == "pr" and sub in ("create", "edit")
+
+
+def scan(command):
+    """What this line does, per segment.
+
+    Yields (segment, verdict) where verdict is one of:
+      ("rule", rule_id, reason) | ("push",) | ("authoring",) | None
+    An UNRESOLVED segment falls back to the blunt regex tables — today's
+    verdict exactly. The tokenizer can sharpen a gate, never blind one."""
+    for seg in cmdline.analyze(command):
+        if seg.resolved:
+            if seg.env.get("CGEL_GIT") == "allow":
+                yield seg, None  # exempted, and only this segment
+                continue
+            hit = _destructive(seg.argv)
+            if hit:
+                yield seg, ("rule", hit[0], hit[1])
+            elif _is_push(seg.argv):
+                yield seg, ("push",)
+            elif _is_authoring(seg.argv):
+                yield seg, ("authoring",)
+            else:
+                yield seg, None
+            continue
+        if APPROVAL_PREFIX.match(seg.raw):
+            yield seg, None  # unresolvable + prefixed: today's verdict
+            continue
+        for rule_id, pattern, reason in RULES:
+            if pattern.search(seg.raw):
+                yield seg, ("rule", rule_id, reason)
+                break
+        else:
+            if PUSH_RE.search(seg.raw):
+                yield seg, ("push",)
+            elif AUTHORING.search(seg.raw):
+                yield seg, ("authoring",)
+            else:
+                yield seg, None
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -127,80 +256,156 @@ def main():
     if C.read_config(repo_root).get("git_guard") == "off":
         return 0
 
-    if APPROVAL_PREFIX.match(command):
-        return 0  # explicit per-command approval typed by the user
+    # The CGEL_GIT=allow escape hatch is per-COMMAND. It used to match the
+    # start of the whole line, so a prefix on a harmless command disabled the
+    # guard for everything chained after it:
+    #   CGEL_GIT=allow echo hi && git reset --hard   -> allowed
+    # Now it exempts only the segment that carries it; an unresolvable line
+    # keeps the old whole-line behaviour, per the fallback contract.
 
-    for rule_id, pattern, reason in RULES:
-        if pattern.search(command):
-            flat = approvals.collapse_ws(command)
-            found = approvals.find_approval(
-                payload.get("transcript_path"), [flat], repo_root
-            )
-            if found:
-                key, _ = found
-                approvals.consume(repo_root, key, "git:%s" % rule_id, [flat], command)
-                print(
-                    approvals.allow_json(
-                        "CGEL: user approved this %s command via question" % rule_id
-                    )
-                )
-                return 0
-            print(
-                "CGEL guard [%s]: blocked — %s. If the user wants this, ask "
-                "them with the AskUserQuestion tool, quoting the exact "
-                "command in backticks, with options starting with 'Approve' "
-                "— then rerun it. They can instead rerun it themselves "
-                "prefixed with `CGEL_GIT=allow `." % (rule_id, reason),
-                file=sys.stderr,
-            )
-            return 2
+    # The binding token stays collapse_ws of the RAW command: this change
+    # decides WHICH commands are gated, never WHAT an approval binds to.
+    flat = approvals.collapse_ws(command)
+    cfg = C.read_config(repo_root)
+    verdicts = list(scan(command))
 
-    if PUSH_RE.search(command) and C.read_config(repo_root).get("push_gate") != "off":
-        flat = approvals.collapse_ws(command)
+    for seg, verdict in verdicts:
+        if not verdict or verdict[0] != "rule":
+            continue
+        rule_id, reason = verdict[1], verdict[2]
         found = approvals.find_approval(
-            payload.get("transcript_path"), [flat], repo_root
+            payload.get("transcript_path"), [flat], repo_root, gate=approvals.GATE_GIT
         )
         if found:
             key, _ = found
-            approvals.consume(repo_root, key, "git:push", [flat], command)
-            print(approvals.allow_json("CGEL: user approved this push via question"))
+            approvals.consume(
+                repo_root,
+                key,
+                "git:%s" % rule_id,
+                [flat],
+                command,
+                gate=approvals.GATE_GIT,
+            )
+            print(
+                approvals.allow_json(
+                    "CGEL: user approved this %s command via question" % rule_id
+                )
+            )
             return 0
         print(
-            "CGEL guard [push]: pushing to a remote needs the user's recorded "
-            "approval. Ask with the AskUserQuestion tool first — quote the "
-            "exact command in backticks and say plainly what goes out "
-            "(commits ahead, diffstat, latest task outcome) — then rerun it. "
-            "The user can instead run it themselves, or rerun prefixed with "
-            "`CGEL_GIT=allow `. Off switch: .cgel/config.json "
-            '{"push_gate": "off"}.',
+            "CGEL guard [%s]: blocked — %s. If the user wants this, ask "
+            "them with the AskUserQuestion tool, quoting the exact "
+            "command in backticks, with options starting with 'Approve' "
+            "— then rerun it. They can also run it themselves."
+            % (rule_id, reason),
             file=sys.stderr,
         )
         return 2
 
-    if (
-        AUTHORING.search(command)
-        and C.read_config(repo_root).get("ai_attribution_guard") != "off"
-    ):
-        for rule_id, pattern, reason in ATTRIBUTION_RULES:
-            if pattern.search(command):
-                print(
-                    "CGEL guard [ai-attribution/%s]: blocked — the commit/PR "
-                    "text carries %s. Commits and PRs are authored solely by "
-                    "the user (the configured git user.name / user.email). "
-                    "Rewrite the message as just the change description "
-                    "(subject + body), with no Claude/Anthropic/AI mention, "
-                    "and retry." % (rule_id, reason),
-                    file=sys.stderr,
+    if cfg.get("push_gate") != "off":
+        for seg, verdict in verdicts:
+            if not verdict or verdict[0] != "push":
+                continue
+            found = approvals.find_approval(
+                payload.get("transcript_path"), [flat], repo_root, gate=approvals.GATE_GIT
+            )
+            if found:
+                key, _ = found
+                approvals.consume(
+                    repo_root,
+                    key,
+                    "git:push",
+                    [flat],
+                    command,
+                    gate=approvals.GATE_GIT,
                 )
-                return 2
+                print(
+                    approvals.allow_json("CGEL: user approved this push via question")
+                )
+                return 0
+            print(
+                "CGEL guard [push]: pushing to a remote needs the user's recorded "
+                "approval. Ask with the AskUserQuestion tool first — quote the "
+                "exact command in backticks and say plainly what goes out "
+                "(commits ahead, diffstat, latest task outcome) — then rerun it. "
+                "The user can also push themselves. Off switch: .cgel/config.json "
+                '{"push_gate": "off"}.',
+                file=sys.stderr,
+            )
+            return 2
+
+    if cfg.get("ai_attribution_guard") != "off":
+        for seg, verdict in verdicts:
+            if not verdict or verdict[0] != "authoring":
+                continue
+            # The trailer is matched in the segment that authors, so a commit
+            # ABOUT the trailer (`git commit -m 'docs: drop Co-Authored-By'`)
+            # is still caught, while a grep for it is not an authoring
+            # command and never reaches here.
+            for rule_id, pattern, reason in ATTRIBUTION_RULES:
+                if pattern.search(seg.raw):
+                    print(
+                        "CGEL guard [ai-attribution/%s]: blocked — the commit/PR "
+                        "text carries %s. Commits and PRs are authored solely by "
+                        "the user (the configured git user.name / user.email). "
+                        "Rewrite the message as just the change description "
+                        "(subject + body), with no Claude/Anthropic/AI mention, "
+                        "and retry." % (rule_id, reason),
+                        file=sys.stderr,
+                    )
+                    return 2
 
     return 0
+
+
+def _inside_cgel_project():
+    """Best effort, with no dependency on the imports that may have failed.
+
+    A blanket fail-closed would brick Bash in every repo on the machine, not
+    just CGEL ones — so scope the refusal to projects that opted in."""
+    try:
+        path = os.path.abspath(os.getcwd())
+        while True:
+            if os.path.isdir(os.path.join(path, ".cgel")):
+                return True
+            parent = os.path.dirname(path)
+            if parent == path:
+                return False
+            path = parent
+    except Exception:
+        return False
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception as exc:  # safety gate: fail closed
-        C._debug("command_guard:main", exc)
-        print("CGEL guard: internal error — blocking as a precaution.", file=sys.stderr)
+    except approvals.LedgerError as exc:
+        # We cannot tell whether an approval was already spent, so we cannot
+        # honour one. The generic handler below would also deny; this exists
+        # because "the approvals ledger is unreadable" is a thing the user can
+        # fix, and "internal error (LedgerError)" is not.
+        print(
+            "CGEL guard: %s — blocking, because an approval that cannot be "
+            "recorded as spent could be replayed without limit. Fix the "
+            "permissions on the CGEL state store, or set "
+            'CGEL_GIT_GUARD=off to proceed without the guard.' % exc,
+            file=sys.stderr,
+        )
         sys.exit(2)
+    except Exception as exc:  # safety gate: fail closed
+        # Do not reach for C._debug here: if cgel_common is what failed to
+        # import, the handler itself raises NameError and the guard exits
+        # non-zero-but-not-2 — which does not block, so the command runs.
+        # That is the opposite of the posture this docstring claims.
+        if os.environ.get("CGEL_DEBUG"):
+            import traceback
+
+            traceback.print_exc()
+        if _inside_cgel_project():
+            print(
+                "CGEL guard: internal error (%s) — blocking as a precaution. "
+                "Re-run with CGEL_DEBUG=1 for the traceback." % type(exc).__name__,
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        sys.exit(0)

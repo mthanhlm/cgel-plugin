@@ -25,6 +25,114 @@ class GuardTestCase(unittest.TestCase):
         }
         return run_hook("command_guard.py", payload, env=env or self.env)
 
+    # ------------------------------------------- decide on the invocation
+    #
+    # Every rule anchored `git\s+<subcommand>`, but git accepts globals in
+    # between — so `git -C . push --force` bypassed all eight rules AND the
+    # push gate. The same text-matching blocked `grep -rn 'git push'`,
+    # because a read of a command looked exactly like a run of it. Both
+    # directions are the same defect: text is not an invocation.
+
+    def assertBlocked(self, command, rule=None):
+        code, _, err = self.bash(command)
+        self.assertEqual(code, 2, "%r should be blocked; got %d" % (command, code))
+        if rule:
+            self.assertIn(rule, err)
+
+    def assertAllowed(self, command):
+        code, out, err = self.bash(command)
+        self.assertEqual(code, 0, "%r should be allowed: %s" % (command, err))
+
+    def test_git_globals_do_not_hide_a_destructive_subcommand(self):
+        for command in (
+            "git -C . push --force origin main",
+            "git -c user.name=x push --force origin main",
+            "git -C /tmp/x reset --hard",
+            "git --no-pager reset --hard",
+            "git -C . branch -D feature",
+            "git -c a=b -C . clean -fd",
+            "git -C . stash drop",
+        ):
+            self.assertBlocked(command)
+
+    def test_git_globals_do_not_hide_a_push(self):
+        code, _, err = self.bash("git -C /srv/repo push origin main")
+        self.assertEqual(code, 2)
+        self.assertIn("[push]", err)
+
+    def test_a_line_wrapped_destructive_command_is_blocked(self):
+        # The patterns bound a command with [^\n], so a backslash-newline
+        # split every rule's match in half.
+        self.assertBlocked("git reset \\\n  --hard")
+        self.assertBlocked("git push \\\n  --force origin main")
+
+    def test_reading_about_a_command_is_not_running_it(self):
+        for command in (
+            "grep -rn 'git push' docs/",
+            'grep -rn "git push --force" .',
+            "git log --grep='git push'",
+            "rg 'git reset --hard' plugin/",
+            "echo 'do not git push --force here'",
+        ):
+            self.assertAllowed(command)
+
+    def test_force_if_includes_is_push_gated_not_force_blocked(self):
+        # --force-if-includes is the safe sibling of --force-with-lease; the
+        # lookahead only exempted -with-lease, so it was blocked as a force
+        # push. It is still a push, so it still needs push approval.
+        code, _, err = self.bash("git push --force-if-includes origin main")
+        self.assertEqual(code, 2)
+        self.assertIn("[push]", err)
+        self.assertNotIn("[force-push]", err)
+
+    def test_a_filename_is_not_a_flag(self):
+        # Everything after `--` is a pathspec. `-f.txt` is a file.
+        self.assertAllowed("git checkout -- -f.txt")
+        self.assertAllowed("git checkout feature/reset--hard-fix")
+
+    def test_an_unresolvable_line_keeps_the_blunt_verdict(self):
+        # The fallback contract: cmdline can sharpen a gate, never blind one.
+        # A shell that could receive a payload is unresolvable, so the raw
+        # text is judged exactly as it was before the tokenizer existed.
+        self.assertBlocked("sh -c 'git push --force origin main'")
+        self.assertBlocked("echo x | xargs git push --force")
+
+    def test_the_guard_stands_aside_outside_a_cgel_project(self):
+        # Fail-closed must not mean bricking Bash in every repo on the
+        # machine: CGEL is opt-in per project.
+        plain = tempfile.mkdtemp(prefix="not-cgel-")
+        self.addCleanup(shutil.rmtree, plain, True)
+        code, _, _ = run_hook(
+            "command_guard.py",
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "git push --force origin main"},
+                "cwd": plain,
+            },
+            env=self.env,
+        )
+        self.assertEqual(code, 0)
+
+    # -------------------------------------- the escape hatch is per-command
+    #
+    # APPROVAL_PREFIX matched the start of the LINE, so a prefix on a
+    # harmless command disabled the guard for everything chained after it.
+    # An escape hatch that exempts commands it does not name is not an
+    # escape hatch, it is a hole.
+
+    def test_the_prefix_exempts_only_the_command_it_prefixes(self):
+        self.assertAllowed("CGEL_GIT=allow git reset --hard")
+        self.assertBlocked("CGEL_GIT=allow echo hi && git reset --hard")
+        self.assertBlocked("CGEL_GIT=allow echo hi ; git push --force origin main")
+
+    def test_no_block_message_tells_the_model_how_to_bypass(self):
+        # APPROVAL_PREFIX is a plain string test — a model that reads the
+        # hint can type the prefix as easily as a human. Naming the bypass in
+        # the refusal handed the blocked party the key.
+        for command in ("git reset --hard", "git push origin main"):
+            _, _, err = self.bash(command)
+            self.assertNotIn("CGEL_GIT", err, "the refusal must not advertise it")
+
     def test_force_push_blocked(self):
         code, _, err = self.bash("git push --force origin main")
         self.assertEqual(code, 2)

@@ -48,12 +48,23 @@ def ok(line, *details):
     return 0
 
 
-def require_repo_root():
-    root = C.find_repo_root(os.getcwd())
+def require_repo_root(args=None):
+    """The project this invocation addresses: `-C <dir>` when given, else cwd.
+
+    `-C` names a directory, never a file — a non-directory is a typo worth an
+    error, not a silent root one level up.
+    """
+    target = getattr(args, "directory", None)
+    if target is not None and not os.path.isdir(target):
+        print("cgel: -C %s is not a directory." % target, file=sys.stderr)
+        print("ERROR bad-directory")
+        sys.exit(3)
+    root = C.resolve_repo_root(target or os.getcwd())
     if not root:
         print(
-            "cgel: no .cgel/ directory found in this directory or any parent. "
-            "Run `cgel init` at the project root first.",
+            "cgel: no .cgel/ directory found in %s or any parent. "
+            "Run `cgel init` at the project root first, or name the project "
+            "with `cgel -C <dir> ...`." % (target or "this directory"),
             file=sys.stderr,
         )
         print("ERROR no-cgel-project")
@@ -187,8 +198,17 @@ def _merge_attribution_settings(root):
     )
 
 
-def cmd_init(_args):
-    root = os.getcwd()
+def cmd_init(args):
+    # init CREATES the project, so it cannot use require_repo_root (which
+    # demands one already exist). It honours -C by initialising there.
+    target = getattr(args, "directory", None)
+    if target is not None and not os.path.isdir(target):
+        print("cgel: -C %s is not a directory." % target, file=sys.stderr)
+        print("ERROR bad-directory")
+        sys.exit(3)
+    # realpath: the store is keyed by path, so an alias must not key a second
+    # store for the same project (repo_id does not resolve symlinks itself).
+    root = os.path.realpath(target or os.getcwd())
     cgel_dir = os.path.join(root, ".cgel")
     task_dir = os.path.join(root, ".task")
     already = os.path.isdir(cgel_dir)
@@ -235,7 +255,7 @@ def cmd_init(_args):
 
 
 def cmd_validate(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     contract, path = load_contract(root, args.contract)
     if contract is None:
         return fail(
@@ -267,7 +287,7 @@ def _intent_review_lines(contract):
 
 
 def cmd_summary(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     contract, path = load_contract(root, args.contract)
     if contract is None:
         return fail("SUMMARY FAIL — no readable contract", "cgel: expected %s" % path)
@@ -467,7 +487,7 @@ def _rotate_closed_task_dir(task_dir, task_id):
 
 
 def cmd_seal(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     contract, path = load_contract(root, args.contract)
     if contract is None:
         return fail("SEAL DENIED — no readable contract", "cgel: expected %s" % path)
@@ -866,7 +886,7 @@ def _required_check_ids(task):
 
 
 def cmd_verify(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     task = resolve_task_or_fail(root, args.task, "VERIFY")
     if task is None:
         return 1
@@ -942,7 +962,7 @@ def cmd_verify(args):
 
 
 def cmd_audit(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     task = resolve_task_or_fail(root, args.task, "AUDIT")
     if task is None:
         return 1
@@ -1269,7 +1289,7 @@ def cmd_check(args):
     return 3
 
 
-def cmd_check_doctor(_args):
+def cmd_check_doctor(args):
     """Re-test every check from both sides. Registration review catches neither.
 
     The canary catches a check that cannot fail (vacuous). Running the check in
@@ -1278,7 +1298,7 @@ def cmd_check_doctor(_args):
     minting or refusing evidence dishonestly, so a health verdict has to see
     both. DOCTOR OK is earned only when every check fails empty AND passes here.
     """
-    root = require_repo_root()
+    root = require_repo_root(args)
     registry, _ = C.load_registry(root)
     checks = registry.get("checks") or {}
     if not checks:
@@ -1372,7 +1392,7 @@ def _registry_frozen(root):
 
 
 def cmd_check_add(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     frozen = _registry_frozen(root)
     if frozen is not None:
         return frozen
@@ -1430,8 +1450,8 @@ def cmd_check_add(args):
     return ok("CHECK ADDED — %s: %s" % (args.check_id, entry["command"]), *details)
 
 
-def cmd_check_list(_args):
-    root = require_repo_root()
+def cmd_check_list(args):
+    root = require_repo_root(args)
     registry, _ = C.load_registry(root)
     checks = registry.get("checks") or {}
     for check_id in sorted(checks):
@@ -1450,7 +1470,7 @@ def cmd_check_list(_args):
 
 
 def cmd_check_remove(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     frozen = _registry_frozen(root)
     if frozen is not None:
         return frozen
@@ -1472,8 +1492,8 @@ def cmd_check_remove(args):
 
 # ----------------------------------------------------------- semantic layer
 
-def cmd_rules(_args):
-    root = require_repo_root()
+def cmd_rules(args):
+    root = require_repo_root(args)
     rules = C.load_semantic_rules(root)
     for rule in sorted(rules.values(), key=lambda r: r["id"]):
         print(
@@ -1497,7 +1517,7 @@ def cmd_semantic(args):
     if args.semantic_command != "record":
         print("ERROR usage")
         return 3
-    root = require_repo_root()
+    root = require_repo_root(args)
     task = resolve_task_or_fail(root, args.task, "SEMANTIC")
     if task is None:
         return 1
@@ -1660,7 +1680,7 @@ def _build_attestation(root, task):
 
 
 def cmd_attest(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     task = resolve_task_or_fail(root, args.task, "ATTEST")
     if task is None:
         return 1
@@ -1706,7 +1726,7 @@ def cmd_iterate(args):
 
 
 def cmd_iterate_open(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     task = resolve_task_or_fail(root, args.task, "ITERATE")
     if task is None:
         return 1
@@ -1795,7 +1815,7 @@ def _normalize_decision(raw):
 
 
 def cmd_iterate_decide(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     task = resolve_task_or_fail(root, args.task, "DECIDE")
     if task is None:
         return 1
@@ -1932,7 +1952,7 @@ def cmd_iterate_decide(args):
 
 
 def cmd_unblock(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     task = resolve_task_or_fail(root, args.task, "UNBLOCK")
     if task is None:
         return 1
@@ -2030,7 +2050,7 @@ def _status_line(root, task):
 
 
 def cmd_status(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     tasks = C.open_tasks(root)
     if args.task:
         tasks = [t for t in tasks if t["task_id"] == args.task]
@@ -2062,7 +2082,7 @@ def cmd_status(args):
 
 
 def cmd_close(args):
-    root = require_repo_root()
+    root = require_repo_root(args)
     task = resolve_task_or_fail(root, args.task, "CLOSE")
     if task is None:
         return 1
@@ -2162,6 +2182,12 @@ def _add_contract_arg(parser):
 
 def _dispatch():
     parser = argparse.ArgumentParser(prog="cgel", add_help=True)
+    parser.add_argument(
+        "-C",
+        "--directory",
+        metavar="DIR",
+        help="address the CGEL project at DIR instead of the current directory",
+    )
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("init", help="create .cgel/ and .task/ (activates the gate)")

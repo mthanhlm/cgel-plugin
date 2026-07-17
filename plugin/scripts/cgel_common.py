@@ -69,6 +69,8 @@ def state_root():
 
 
 def repo_id(repo_root):
+    # Callers MUST pass a resolve_repo_root() result: this does not resolve
+    # symlinks itself, so two aliases of one repo would key two stores.
     abspath = os.path.abspath(repo_root)
     digest = hashlib.sha256(abspath.encode("utf-8")).hexdigest()[:12]
     name = os.path.basename(abspath) or "repo"
@@ -79,7 +81,7 @@ def repo_state_dir(repo_root):
     return os.path.join(state_root(), repo_id(repo_root))
 
 
-def find_repo_root(start):
+def _find_cgel_dir(start):
     """Nearest ancestor containing .cgel/ — CGEL is opt-in per project."""
     cur = os.path.abspath(start or os.getcwd())
     while True:
@@ -89,6 +91,71 @@ def find_repo_root(start):
         if parent == cur:
             return None
         cur = parent
+
+
+def _realpath(path):
+    """realpath that never raises.
+
+    The obvious bad cases do not raise on their own: non-strict realpath
+    resolves a broken or looping link to the path UNRESOLVED, which is the
+    answer we want — the target keeps its in-repo name and stays judged by
+    scope instead of escaping the prefix test. This wrapper is for the
+    residue (a non-str path, an embedded null). An exception escaping to a
+    hook's bare `except -> exit 0` would turn an unreadable link into an
+    ungated edit, so failure falls back to abspath and stays in-repo.
+    """
+    try:
+        return os.path.realpath(path)
+    except (OSError, ValueError, TypeError) as exc:
+        _debug("realpath", exc)
+        return os.path.abspath(path)
+
+
+def _split_unresolved(target, cwd):
+    """(real_dir, leaf) for `target` interpreted against `cwd`.
+
+    No abspath before the split: abspath collapses `..` textually, which is
+    wrong across a symlinked parent (`link/../x` is not `x` when `link`
+    points elsewhere). Join, split, then resolve the DIRECTORY only.
+    """
+    raw = target if os.path.isabs(target) else os.path.join(cwd, target)
+    parent, leaf = os.path.split(raw)
+    return _realpath(parent or cwd), leaf
+
+
+def resolve_repo_root(cwd, target=None):
+    """The project a decision belongs to: rooted at the FILE, not the session.
+
+    Realpath the DIRECTORY, never the final component. `src/escape.py` may be
+    a symlink to /etc/passwd: resolving the leaf would move the decision to
+    /etc, land outside repo_root, and ungate an edit scope.allowed never
+    authorised. The directory alias defeats the prefix test (must-fix #5);
+    the leaf alias is the one whose gating we must keep.
+
+    With no target, root at the real cwd — a session's own project.
+    """
+    if target:
+        real_dir, _leaf = _split_unresolved(target, cwd or os.getcwd())
+        root = _find_cgel_dir(real_dir)
+        if root:
+            return root
+        # Fall through: the target is outside any project, but the session may
+        # still be inside one. resolve_target then reports in_repo=False.
+    return _find_cgel_dir(_realpath(cwd or os.getcwd()))
+
+
+def resolve_target(cwd, repo_root, target):
+    """(rel, in_repo) for `target` against `repo_root`, both realpath'd at the
+    directory. `rel` is the repo-relative slash path the scope is written in;
+    in_repo is False when the target lives outside the project entirely."""
+    if not repo_root:
+        return None, False
+    real_dir, leaf = _split_unresolved(target, cwd or os.getcwd())
+    root = _realpath(repo_root)
+    if real_dir != root and not real_dir.startswith(root + os.sep):
+        return None, False
+    abs_path = os.path.join(real_dir, leaf)
+    return os.path.relpath(abs_path, root).replace(os.sep, "/"), True
 
 
 def read_config(repo_root):

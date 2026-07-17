@@ -30,13 +30,21 @@ import approvals
 import cgel_common as C
 import cmdline
 
-SEAL_RE = re.compile(r"\bcgel\s+seal\b")
+# Every verb anchor must tolerate the top-level `-C <dir>` flag between `cgel`
+# and the verb: `cgel -C . seal …` breaks a bare `\bcgel\s+seal\b` and would
+# silently disable this gate for the flag that walks past it. This is one
+# narrow anchored regex on one literal flag, not a second tokenizer.
+_CGEL = r"\bcgel\b(?:\s+(?:-C|--directory)(?:=|\s+)\S+)?\s+"
+_DASH_C = re.compile(r"\bcgel\s+(?:-C|--directory)(?:=|\s+)([^\s;|&]+)")
+
+SEAL_RE = re.compile(_CGEL + r"seal\b")
 DIGEST_RE = re.compile(r"--digest[=\s]+[\"']?(sha256:[0-9a-fA-F]{8,64})")
 COMMAND_BOUND_RES = (
-    ("unblock", re.compile(r"\bcgel\s+unblock\b")),
-    ("failure-override", re.compile(r"\bcgel\s+iterate\s+decide\b[^\n]*--override-reason")),
-    ("check-force", re.compile(r"\bcgel\s+check\s+add\b[^\n]*(?:--force|--allow-unproven)\b")),
-    ("check-remove", re.compile(r"\bcgel\s+check\s+remove\b")),
+    ("unblock", re.compile(_CGEL + r"unblock\b")),
+    ("failure-override", re.compile(_CGEL + r"iterate\s+decide\b[^\n]*--override-reason")),
+    ("check-force", re.compile(_CGEL + r"check\s+add\b[^\n]*(?:--force|--allow-unproven)\b")),
+    ("check-remove", re.compile(_CGEL + r"check\s+remove\b")),
+    # Catch-all by design: the flag may sit anywhere on the line.
     ("allow-dirty", re.compile(r"\bcgel\b[^\n]*--allow-dirty\b")),
 )
 DIGEST_PREFIX_LEN = len("sha256:") + 12
@@ -93,14 +101,28 @@ def main():
         return 0
 
     cwd = payload.get("cwd") or os.getcwd()
-    repo_root = C.find_repo_root(cwd)
+    # Root at the project the command NAMES, not the one the session sits in:
+    # `cgel -C ../other seal …` seals ../other, so ../other's approvals and
+    # config are the ones that govern it.
+    dash_c = _DASH_C.search(command)
+    repo_root = C.resolve_repo_root(dash_c.group(1) if dash_c else cwd)
+
+    purposes = [name for name, pattern in COMMAND_BOUND_RES if pattern.search(command)]
+    seal = bool(SEAL_RE.search(command))
+
     if not repo_root:
+        if dash_c or seal or purposes:
+            # An approval-gated verb we cannot root is a verb we cannot gate.
+            # Standing aside here would make `cgel -C /not-a-project seal …`
+            # the bypass. Fail closed.
+            return deny(
+                "`cgel` naming a directory that is not a CGEL project",
+                "a valid project directory (run `cgel init` there first)",
+            )
         return 0
     if C.read_config(repo_root).get("approval_gate") == "off":
         return 0
 
-    purposes = [name for name, pattern in COMMAND_BOUND_RES if pattern.search(command)]
-    seal = bool(SEAL_RE.search(command))
     if not purposes and not seal:
         return 0
 

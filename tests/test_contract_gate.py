@@ -163,6 +163,11 @@ class GateTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
 
     def test_file_outside_repo_not_gated(self):
+        # Passes for a NEW reason since rooting moved to the file: the target
+        # has no project above it, so resolve_repo_root falls back to the
+        # session's root (self.repo) and resolve_target reports in_repo=False.
+        # Before, find_repo_root(cwd) found self.repo and the prefix test
+        # rejected the path. Same verdict, different mechanism.
         outside = tempfile.mkdtemp(prefix="cgel-outside-")
         try:
             payload = {
@@ -174,6 +179,147 @@ class GateTestCase(unittest.TestCase):
             self.assertEqual(code, 0)
         finally:
             shutil.rmtree(outside, ignore_errors=True)
+
+
+class RootingTestCase(GateTestCase):
+    """must-fix #5/#6 — the gate roots at the FILE, not at the session.
+
+    Ubuntu-only CI cannot see the symlink class of defect unless a test builds
+    the symlink itself, so these construct the aliases rather than assuming a
+    host layout.
+    """
+
+    def gate_edit(self, cwd, file_path):
+        payload = {
+            "tool_name": "Write",
+            "tool_input": {"file_path": file_path},
+            "cwd": cwd,
+        }
+        return run_hook("contract_gate.py", payload, env=self.env)[0]
+
+    def test_session_above_the_project_still_gates_edits_inside_it(self):
+        # must-fix #5: a session opened at a monorepo root has no .cgel/ above
+        # it, so rooting at the session found nothing and stood aside — every
+        # edit into every project below was ungated, silently.
+        self.seal()
+        mono = os.path.dirname(self.repo)
+        self.assertFalse(os.path.isdir(os.path.join(mono, ".cgel")))
+        self.assertEqual(
+            self.gate_edit(mono, os.path.join(self.repo, "docs/x.md")), 2
+        )
+        self.assertEqual(
+            self.gate_edit(mono, os.path.join(self.repo, "src/app.py")), 0
+        )
+
+    def test_symlinked_directory_alias_cannot_defeat_the_prefix_test(self):
+        # must-fix #6: repo_root and the target were compared as strings, so
+        # either side reached through an alias made startswith() false and the
+        # edit ungated. Both are realpath'd at the directory now.
+        self.seal()
+        alias = os.path.join(tempfile.mkdtemp(prefix="cgel-alias-"), "link")
+        try:
+            os.symlink(self.repo, alias)
+            self.assertEqual(
+                self.gate_edit(alias, os.path.join(self.repo, "docs/x.md")), 2
+            )
+            self.assertEqual(
+                self.gate_edit(self.repo, os.path.join(alias, "docs/x.md")), 2
+            )
+            self.assertEqual(
+                self.gate_edit(alias, os.path.join(alias, "src/app.py")), 0
+            )
+        finally:
+            shutil.rmtree(os.path.dirname(alias), ignore_errors=True)
+
+    def test_symlinked_leaf_escaping_the_repo_is_judged_at_its_in_repo_name(self):
+        # The asymmetry, and the reason resolve_repo_root stops at the dirname:
+        # resolving the LEAF would move this decision to /etc, land outside
+        # repo_root, and ungate an edit no scope authorised. Judged at
+        # src/escape.py it is refused by a scope that does not name src/**.
+        self.seal(
+            dict(
+                CONTRACT,
+                scope={"allowed": ["docs/**"], "forbidden": []},
+            )
+        )
+        os.makedirs(os.path.join(self.repo, "src"), exist_ok=True)
+        escape = os.path.join(self.repo, "src", "escape.py")
+        os.symlink("/etc/passwd", escape)
+        code, _, err = run_hook(
+            "contract_gate.py",
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": escape},
+                "cwd": self.repo,
+            },
+            env=self.env,
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("src/escape.py", err)
+        self.assertNotIn("/etc/passwd", err)
+
+    def test_a_looping_symlink_does_not_fail_the_gate_open(self):
+        # Non-strict realpath does not raise on a loop; it returns the path
+        # unresolved. That is the safe answer — the target keeps its in-repo
+        # name and is still judged. Pinned with an OUT-OF-SCOPE path, because
+        # an in-scope one would return 0 whether the gate ran or stood aside.
+        self.seal()
+        os.makedirs(os.path.join(self.repo, "docs"), exist_ok=True)
+        os.symlink(
+            os.path.join(self.repo, "docs", "loop_b"),
+            os.path.join(self.repo, "docs", "loop_a"),
+        )
+        os.symlink(
+            os.path.join(self.repo, "docs", "loop_a"),
+            os.path.join(self.repo, "docs", "loop_b"),
+        )
+        self.assertEqual(
+            self.gate_edit(self.repo, os.path.join(self.repo, "docs/loop_a/x.md")), 2
+        )
+
+    def recorded_edits(self, task_id="TASK-T1"):
+        paths = []
+        for name in os.listdir(self.state):
+            events_path = os.path.join(self.state, name, task_id, "events.jsonl")
+            if os.path.isfile(events_path):
+                with open(events_path, encoding="utf-8") as fh:
+                    for line in fh:
+                        if line.strip():
+                            event = json.loads(line)
+                            if event.get("type") == "edit":
+                                paths.append(event["path"])
+        return paths
+
+    def test_the_recorder_roots_at_the_file_too(self):
+        # An edit the recorder does not see is an edit that never marks
+        # evidence stale — the same hole as an ungated edit, one surface over.
+        # The recorder rooted at the session, so a monorepo-root session wrote
+        # no events at all.
+        self.seal()
+        mono = os.path.dirname(self.repo)
+        code, _, _ = run_hook(
+            "evidence_recorder.py",
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": os.path.join(self.repo, "src/app.py")},
+                "cwd": mono,
+                "hook_event_name": "PostToolUse",
+            },
+            env=self.env,
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("src/app.py", self.recorded_edits())
+
+    def test_a_dangling_symlinked_directory_is_still_judged(self):
+        self.seal()
+        os.makedirs(os.path.join(self.repo, "docs"), exist_ok=True)
+        os.symlink(
+            os.path.join(self.repo, "docs", "nowhere"),
+            os.path.join(self.repo, "docs", "dangling"),
+        )
+        self.assertEqual(
+            self.gate_edit(self.repo, os.path.join(self.repo, "docs/dangling/x.md")), 2
+        )
 
 
 if __name__ == "__main__":

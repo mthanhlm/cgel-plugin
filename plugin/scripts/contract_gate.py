@@ -1,5 +1,8 @@
 """CGEL PreToolUse gate for Edit|Write|NotebookEdit.
 
+Rooted at the FILE, not at the session: a session opened above a project
+(a monorepo root) still gates the edits it makes inside one.
+
 Blocks (exit 2) file edits unless a sealed contract covers them. Several
 tasks may be open at once (D-39): an edit is allowed when ANY open task in
 an edit lifecycle covers the path —
@@ -50,19 +53,16 @@ def main():
         return allow()
 
     cwd = payload.get("cwd") or os.getcwd()
-    repo_root = C.find_repo_root(cwd)
+    repo_root = C.resolve_repo_root(cwd, file_path)
     if not repo_root:
         return allow()  # not a CGEL-enabled project
 
     if C.read_config(repo_root).get("gate") == "off":
         return allow()
 
-    abs_path = os.path.abspath(
-        file_path if os.path.isabs(file_path) else os.path.join(cwd, file_path)
-    )
-    if not abs_path.startswith(repo_root + os.sep):
+    rel, in_repo = C.resolve_target(cwd, repo_root, file_path)
+    if not in_repo:
         return allow()  # writes outside the project are not gated here
-    rel = os.path.relpath(abs_path, repo_root).replace(os.sep, "/")
 
     if C.path_matches(rel, C.DRAFT_EXEMPT_PATTERNS):
         return allow()  # contract drafts and debug mirror stay writable

@@ -5,10 +5,11 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
-from hookrunner import run_cli, run_hook, decision_line
+from hookrunner import run_cli, run_hook, decision_line, SCRIPTS_DIR
 
 CONTRACT = {
     "task": {"id": "TASK-L1", "type": "bug-fix", "goal": "Loop control demo"},
@@ -307,6 +308,48 @@ class LoopTestCase(unittest.TestCase):
         self.assertIn("no AI attribution", context)
         self.assertIn("CGEL resume", context)
 
+    # ------------------------------------------- the monorepo-session floor
+    #
+    # command_guard and approval_gate root at the session's directory by
+    # design (rooting a Bash hook by scanning below cwd means a walk on every
+    # Bash call, ambiguous with two projects). A session above a project is
+    # therefore ungated at the Bash level, and the only honest thing to do is
+    # say so once, at the top.
+
+    def test_session_above_a_project_says_nothing_here_is_gated(self):
+        # A private monorepo, not dirname(self.repo): that is /tmp, which
+        # collects every other test's project and would make this assert on
+        # whatever else ran today.
+        mono = tempfile.mkdtemp(prefix="cgel-mono-")
+        try:
+            project = os.path.join(mono, "proj")
+            os.makedirs(os.path.join(project, ".cgel"))
+            code, out, err = run_hook(
+                "session_start.py",
+                {"hook_event_name": "SessionStart", "cwd": mono},
+                env=self.env,
+            )
+            self.assertEqual(code, 0, err)
+            context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("nothing in this session is gated", context)
+            self.assertIn(os.path.realpath(project), context)
+            self.assertIn("cgel -C", context)
+        finally:
+            shutil.rmtree(mono, ignore_errors=True)
+
+    def test_session_in_a_plain_directory_stays_silent(self):
+        plain = tempfile.mkdtemp(prefix="cgel-plain-")
+        try:
+            code, out, _ = run_hook(
+                "session_start.py",
+                {"hook_event_name": "SessionStart", "cwd": plain},
+                env=self.env,
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(out.strip(), "")
+        finally:
+            shutil.rmtree(plain, ignore_errors=True)
+
     def test_session_start_attribution_rule_kill_switch(self):
         C_path = os.path.join(self.repo, ".cgel", "config.json")
         with open(C_path, "w", encoding="utf-8") as fh:
@@ -330,6 +373,74 @@ class LoopTestCase(unittest.TestCase):
         code, out, _ = self.cli("audit")
         self.assertEqual(code, 0)
         self.assertIn("chain=intact", decision_line(out))
+
+
+class ProjectScanTestCase(unittest.TestCase):
+    """_projects_below runs on EVERY session start in EVERY directory.
+
+    Its budget is the feature: a notice is never worth real time, so a
+    partial answer is fine and no answer is acceptable. These pin the
+    refusals, because a walk of / or $HOME on every session start would be a
+    worse defect than the one the notice reports.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, SCRIPTS_DIR)
+        import session_start
+
+        self.session_start = session_start
+        self.base = tempfile.mkdtemp(prefix="cgel-scan-")
+
+    def tearDown(self):
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def make_project(self, rel):
+        path = os.path.join(self.base, rel)
+        os.makedirs(os.path.join(path, ".cgel"))
+        return path
+
+    def test_refuses_the_filesystem_root(self):
+        self.assertEqual(self.session_start._projects_below("/"), [])
+
+    def test_refuses_home(self):
+        self.assertEqual(
+            self.session_start._projects_below(os.path.expanduser("~")), []
+        )
+
+    def test_finds_projects_one_and_two_levels_down(self):
+        a = self.make_project("a")
+        b = self.make_project("group/b")
+        self.assertEqual(
+            self.session_start._projects_below(self.base),
+            sorted([os.path.realpath(a), os.path.realpath(b)]),
+        )
+
+    def test_checks_the_deepest_legal_level_before_pruning(self):
+        # Pruning at depth BEFORE checking the level would never see this.
+        deep = self.make_project("x/y/z")
+        self.assertEqual(
+            self.session_start._projects_below(self.base, max_depth=3),
+            [os.path.realpath(deep)],
+        )
+
+    def test_skips_vendored_trees_before_checking_them(self):
+        self.make_project("node_modules/pkg")
+        self.assertEqual(self.session_start._projects_below(self.base), [])
+
+    def test_a_project_inside_a_project_is_not_reported_twice(self):
+        outer = self.make_project("outer")
+        os.makedirs(os.path.join(outer, "inner", ".cgel"))
+        self.assertEqual(
+            self.session_start._projects_below(self.base),
+            [os.path.realpath(outer)],
+        )
+
+    def test_the_limit_caps_the_result(self):
+        for name in "abcdefgh":
+            self.make_project(name)
+        self.assertEqual(
+            len(self.session_start._projects_below(self.base, limit=5)), 5
+        )
 
 
 class SymlinkTestCase(unittest.TestCase):

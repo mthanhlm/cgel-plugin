@@ -64,6 +64,18 @@ design, debate rounds v0.1→v1.0). All four MVP phases are implemented:
 | No destructive git commands | `PreToolUse` Bash guard (`scripts/command_guard.py`), fail-closed | guardrail on the command string |
 | No AI attribution in commits/PRs | `cgel init` sets `attribution.commit`/`pr`/`sessionUrl` to `""` in `.claude/settings.json`, so the harness never authors the trailer at all (covers `$EDITOR` and `--body-file`); the Bash guard additionally blocks a `git commit` / `gh pr create\|edit` whose text carries a `Co-Authored-By: Claude` trailer or generated-with footer typed inline; `SessionStart` injects the standing rule as the belt-and-braces third layer | HARD_ENFORCED (settings) + guardrail on the command string |
 
+**Precondition for every row above.** CGEL activates per project, and a project is a directory containing `.cgel/`.
+
+The file-level rows (the edit gate, the recorder) root at the **file being touched**, so they hold for any edit inside a project — including from a session opened above one.
+
+The Bash-level rows (the git guard, the approval gate) root at the **session's working directory**. Open a session above your projects — at a monorepo root, say — and those rows do not hold for that session: nothing is watching the command line. This is a deliberate trade: rooting a Bash hook by scanning for projects underneath would mean a directory walk on every Bash call, and would be ambiguous the moment a monorepo holds two. Instead, `SessionStart` says so on the way in, naming the projects it found and how to address one:
+
+```
+cgel -C <project> status
+```
+
+`-C` addresses a project from anywhere and is gated exactly as if you were standing inside it.
+
 ## Approval by question
 
 Privileged commands — `cgel seal`, `cgel unblock`, failure overrides,
@@ -332,6 +344,13 @@ turn the gate off and keep:
 Every task-addressed verb takes `--task <id>` (required only when several
 tasks are open). `validate`/`summary`/`seal` take `--contract <path>` for
 parallel drafts.
+
+Every verb also takes a top-level `cgel -C <dir>` (`--directory`), which
+addresses the project at `<dir>` instead of the current directory — useful
+from a monorepo root, where the Bash-level guards are not active (see
+[the precondition](#what-phase-0-enforces)). It names a directory, never a
+file, and the approval gate treats `cgel -C <dir> seal ...` exactly as it
+treats `cgel seal ...` from inside.
 
 | Command | What it does |
 |---|---|

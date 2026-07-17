@@ -46,30 +46,36 @@ def main():
 
     tool = payload.get("tool_name") or ""
     cwd = payload.get("cwd") or os.getcwd()
-    repo_root = C.find_repo_root(cwd)
+    tool_input = payload.get("tool_input") or {}
+
+    # The target must be known BEFORE rooting: the recorder roots at the file
+    # it is recording, so an edit below a monorepo-root session is still an
+    # event in the project that owns the file. A Bash command has no target
+    # and roots at the session.
+    file_path = None
+    if tool in EDIT_TOOLS:
+        file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
+        if not file_path:
+            return 0
+    elif tool != "Bash":
+        return 0
+
+    repo_root = C.resolve_repo_root(cwd, file_path)
     if not repo_root:
         return 0
     tasks = C.open_tasks(repo_root)
     if not tasks:
         return 0
 
-    tool_input = payload.get("tool_input") or {}
     record = None
-
     if tool in EDIT_TOOLS:
-        file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
-        if not file_path:
+        rel, in_repo = C.resolve_target(cwd, repo_root, file_path)
+        if not in_repo:
             return 0
-        abs_path = os.path.abspath(
-            file_path if os.path.isabs(file_path) else os.path.join(cwd, file_path)
-        )
-        if not abs_path.startswith(repo_root + os.sep):
-            return 0
-        rel = os.path.relpath(abs_path, repo_root).replace(os.sep, "/")
         if C.path_matches(rel, C.DRAFT_EXEMPT_PATTERNS):
             return 0
         record = {"type": "edit", "tool": tool, "path": rel, "at": C.utc_now()}
-    elif tool == "Bash":
+    else:
         command = tool_input.get("command") or ""
         audit_all = C.read_config(repo_root).get("audit_bash") == "all"
         if not CGEL_WORD.search(command) and not audit_all:

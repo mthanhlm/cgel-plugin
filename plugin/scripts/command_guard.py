@@ -250,7 +250,11 @@ def main():
     command = (payload.get("tool_input") or {}).get("command") or ""
 
     cwd = payload.get("cwd") or os.getcwd()
-    repo_root = C.find_repo_root(cwd)
+    # Rooted at the session, deliberately. Do NOT root a Bash hook by scanning
+    # for a project below cwd: a directory walk on every Bash call, and
+    # ambiguous the moment a monorepo holds two. The floor is the
+    # session_start warning, and the residual is stated in the README.
+    repo_root = C.resolve_repo_root(cwd)
     if not repo_root:
         return 0  # not a CGEL-enabled project
     if C.read_config(repo_root).get("git_guard") == "off":

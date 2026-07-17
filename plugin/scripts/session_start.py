@@ -167,6 +167,78 @@ def summary_text(repo_root, tasks):
     return "\n".join(lines)
 
 
+SCAN_SKIP = frozenset(
+    (
+        ".git", "node_modules", "venv", ".venv", "__pycache__", "dist",
+        "build", "target", ".tox", ".mypy_cache", ".pytest_cache", "vendor",
+        ".idea", ".vscode", ".next", ".cache",
+    )
+)
+
+
+def _projects_below(cwd, max_depth=3, limit=5, max_dirs=2000):
+    """CGEL projects in the subtree, for the monorepo notice only.
+
+    Hard-budgeted on purpose: this runs on every session start in every
+    directory. It answers "did you mean one of these?", so a partial answer
+    is a fine answer and no answer is an acceptable one — never a reason to
+    spend real time. Refuses to scan / or $HOME, where the walk is both
+    enormous and meaningless.
+    """
+    base = C._realpath(cwd)
+    if base == os.path.dirname(base):
+        return []
+    try:
+        if base == C._realpath(os.path.expanduser("~")):
+            return []
+    except Exception as exc:  # noqa: BLE001 — a notice is never worth raising
+        C._debug("session_start:home", exc)
+        return []
+
+    found = []
+    seen_dirs = 0
+    for dirpath, dirnames, _files in os.walk(base):
+        seen_dirs += 1
+        if seen_dirs > max_dirs:
+            break
+        # Filter BEFORE the .cgel check so a skipped tree cannot contribute.
+        dirnames[:] = [d for d in dirnames if d not in SCAN_SKIP]
+        if dirpath != base and os.path.isdir(os.path.join(dirpath, ".cgel")):
+            found.append(dirpath)
+            dirnames[:] = []  # a project inside a project is not our business
+            if len(found) >= limit:
+                break
+            continue
+        # Prune at depth AFTER checking this level, or the deepest legal
+        # level never gets checked.
+        if dirpath[len(base):].count(os.sep) >= max_depth:
+            dirnames[:] = []
+    return sorted(found)
+
+
+def monorepo_notice(projects):
+    lines = [
+        "CGEL notice — this session is rooted above %d CGEL project%s, so "
+        "nothing in this session is gated."
+        % (len(projects), "" if len(projects) == 1 else "s"),
+        "",
+        "The edit gate and the recorder root at the FILE, so edits inside a "
+        "project below are still gated and recorded. The Bash-level guards "
+        "(git commands, approval-gated cgel verbs) root at the session's "
+        "directory and are NOT active here.",
+        "",
+        "Projects found:",
+    ]
+    for path in projects:
+        lines.append("  %s" % path)
+    lines.append("")
+    lines.append(
+        "To work under CGEL, start the session inside a project, or address "
+        "one explicitly: `cgel -C %s status`." % projects[0]
+    )
+    return "\n".join(lines)
+
+
 def emit(context):
     print(
         json.dumps(
@@ -189,8 +261,15 @@ def main():
         C._debug("session_start:stdin", exc)
         return 0
     cwd = payload.get("cwd") or os.getcwd()
-    repo_root = C.find_repo_root(cwd)
+    repo_root = C.resolve_repo_root(cwd)
     if not repo_root:
+        # A session opened ABOVE a project (a monorepo root) is the one place
+        # the Bash-rooted gates cannot help: command_guard and approval_gate
+        # root at cwd by design, so nothing here is guarding those projects.
+        # Saying so once, at the top of the session, is the floor.
+        below = _projects_below(cwd)
+        if below:
+            emit(monorepo_notice(below))
         return 0
 
     sections = []

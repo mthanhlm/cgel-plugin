@@ -24,6 +24,10 @@ files will change. When in doubt, answer first and offer the task second.
 If there is no `.cgel/` directory and the user explicitly invoked
 `/cgel:task`, set the project up for them instead of bouncing the request:
 
+0. First check you are not simply rooted above one: if `SessionStart` named
+   projects below this directory, the user probably means one of them. Every
+   verb takes `cgel -C <dir>` to address a project from outside it. Ask
+   before initializing a second project at a parent of an existing one.
 1. Run `cgel init` (creates `.cgel/`, `.task/`, a registry stub, and
    gitignores `.task/`).
 2. Discover the project's real checks — test/build/lint commands from

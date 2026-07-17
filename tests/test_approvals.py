@@ -434,17 +434,45 @@ class ApprovalTestCase(unittest.TestCase):
             code, _, _ = self.gate(command)
             self.assertEqual(code, 2, command)
 
-    def test_outside_cgel_repo_stands_aside(self):
+    # Tombstone: test_outside_cgel_repo_stands_aside asserted that a SEAL
+    # outside a CGEL project stands aside. Its premise was the defect. The
+    # hook roots at the payload's cwd while the CLI roots at its own, so
+    # `cd /project && cgel seal --digest X` from a non-project session left
+    # the gate rooted at nothing, standing aside, while the CLI happily
+    # sealed — the bypass. An approval-gated verb we cannot root is a verb we
+    # cannot gate. The two tests below split the property that was conflated:
+    # standing aside is for UNGATED commands; a gated verb fails closed.
+
+    def test_ungated_cgel_command_outside_a_project_stands_aside(self):
         plain = tempfile.mkdtemp(prefix="cgel-plain-")
         try:
             payload = {
                 "tool_name": "Bash",
-                "tool_input": {"command": SEAL_COMMAND},
+                "tool_input": {"command": "cgel status"},
                 "cwd": plain,
                 "transcript_path": self.transcript,
             }
             code, _, _ = run_hook("approval_gate.py", payload, env=self.env)
             self.assertEqual(code, 0)
+        finally:
+            shutil.rmtree(plain, ignore_errors=True)
+
+    def test_gated_verb_we_cannot_root_fails_closed(self):
+        plain = tempfile.mkdtemp(prefix="cgel-plain-")
+        try:
+            for command in (
+                SEAL_COMMAND,  # `cd /project && cgel seal` roots here at nothing
+                "cgel -C %s seal T-1 --digest %s" % (plain, DIGEST),
+                "cgel unblock --reason x",
+            ):
+                payload = {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": command},
+                    "cwd": plain,
+                    "transcript_path": self.transcript,
+                }
+                code, _, _ = run_hook("approval_gate.py", payload, env=self.env)
+                self.assertEqual(code, 2, command)
         finally:
             shutil.rmtree(plain, ignore_errors=True)
 
@@ -475,6 +503,45 @@ class ApprovalTestCase(unittest.TestCase):
             "approval_gate.py", None, env=self.env, raw_stdin="{not json"
         )
         self.assertEqual(code, 0)
+
+    # ------------------------------------------------------- the -C flag
+    #
+    # Every verb anchor sits between `cgel` and the verb, so a top-level flag
+    # in that gap breaks the anchor and the gate stands aside. `-C` therefore
+    # cannot ship in an earlier commit than these anchors: on its own it is a
+    # one-flag bypass of every approval gate in the product. That is why the
+    # plan called the ordering non-negotiable, and this is the test that
+    # keeps it true.
+
+    def test_dash_c_does_not_walk_past_the_gate(self):
+        self.write_transcript()  # no approval recorded: everything must deny
+        for command in (
+            "cgel -C . seal T-1 --digest %s" % DIGEST,
+            "cgel --directory=. seal T-1 --digest %s" % DIGEST,
+            "cgel --directory . seal T-1 --digest %s" % DIGEST,
+            "cgel -C . unblock",
+            "cgel -C . check remove t",
+            "cgel -C . check add t --command 'pytest' --force",
+            "cgel -C . iterate decide RETRY --override-reason x --approved-by u",
+            "cgel -C . seal T-1 --digest %s --allow-dirty" % DIGEST,
+        ):
+            code, _, _ = self.gate(command)
+            self.assertEqual(code, 2, command)
+
+    def test_dash_c_on_an_ungated_verb_still_stands_aside(self):
+        self.write_transcript()
+        for command in ("cgel status", "cgel -C . status", "cgel -C . audit"):
+            code, _, _ = self.gate(command)
+            self.assertEqual(code, 0, command)
+
+    def test_dash_c_approval_binds_the_same_as_without_it(self):
+        command = "cgel -C . seal TASK-A1 --digest %s" % DIGEST
+        self.write_transcript(
+            transcript_entry("Approve?", "Approve seal %s" % DIGEST_PREFIX)
+        )
+        code, out, _ = self.gate(command)
+        self.assertEqual(code, 0)
+        self.assertIn("approved", out)
 
     # ------------------------------------------------- command_guard + git
 

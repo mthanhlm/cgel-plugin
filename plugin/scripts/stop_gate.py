@@ -28,7 +28,7 @@ def main():
         return 0
 
     cwd = payload.get("cwd") or os.getcwd()
-    repo_root = C.find_repo_root(cwd)
+    repo_root = C.resolve_repo_root(cwd)
     if not repo_root:
         return 0
 

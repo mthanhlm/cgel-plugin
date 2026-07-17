@@ -478,15 +478,85 @@ def validate_contract(contract):
 
 # ------------------------------------------------------------------- state
 
-def open_tasks(repo_root):
-    """Every task in the store whose lifecycle is SEALED/ACTIVE/BLOCKED,
-    oldest seal first.
+def repo_fingerprint(repo_root):
+    """Which repository this is, by git lineage: the sorted root commits.
 
-    There is no CURRENT pointer any more — several tasks may be open at once
-    (D-39) and state.json is the single authority. Tasks left open by older
-    versions become visible here instead of being masked by a stale pointer;
-    `cgel status` lists them and `cgel close --task <id>` retires them.
+    Deliberately NOT unique per working copy — a clone, a worktree and a
+    `mv`d repo all share it. That is the point. It GUARDS the path-keyed
+    store; it never keys it. A repo-local UUID would key uniquely and be
+    wrong: .cgel/ is gitignored (D-35), so a fresh clone would mint a new id
+    and orphan live tasks, while `cp -r` would duplicate one.
+
+    Returns None when there is no answer (no git, no commits, git missing).
+    None means "unknown", and unknown never drops a task.
+
+    Note: because the lineage is shared, stale_stores() may surface a sibling
+    worktree's store. Its output is advice for the user, never an automatic
+    move.
     """
+    head = None
+    try:
+        proc = _git(repo_root, "rev-parse", "HEAD")
+        if proc.returncode == 0:
+            head = proc.stdout.strip()
+    except Exception as exc:  # noqa: BLE001 — identity is best-effort
+        _debug("fingerprint:head", exc)
+        return None
+    if not head:
+        return None  # no git, or a repo with no commits yet
+
+    store = repo_state_dir(repo_root)
+    cache_path = os.path.join(store, "fingerprint.json")
+    cached = None
+    try:
+        cached = load_json(cache_path)
+    except Exception as exc:
+        _debug("fingerprint:cache-read", exc)
+    if isinstance(cached, dict) and cached.get("head") == head:
+        value = cached.get("fingerprint")
+        return value if isinstance(value, str) else None
+
+    try:
+        proc = _git(repo_root, "rev-list", "--max-parents=0", "HEAD")
+        if proc.returncode != 0:
+            return None
+        roots = sorted(x.strip() for x in proc.stdout.split() if x.strip())
+    except Exception as exc:  # noqa: BLE001
+        _debug("fingerprint:rev-list", exc)
+        return None
+    if not roots:
+        return None
+    value = "git-root:" + ",".join(roots)
+
+    # Only cache into a store that already exists: a READ must never be the
+    # thing that creates the store directory, or `cgel status` in a fresh
+    # checkout would mint a store and then report on it.
+    if os.path.isdir(store):
+        try:
+            atomic_write_json(cache_path, {"head": head, "fingerprint": value})
+        except Exception as exc:
+            _debug("fingerprint:cache-write", exc)
+    return value
+
+
+def _fingerprint_ok(current, state):
+    """Does this task belong to the repo now at this path?
+
+    Unknown on EITHER side keeps the task. A task sealed before fingerprints
+    existed has none; a non-git project can never produce one. Neither is
+    evidence of a mismatch, and this guard drops tasks — so it fires only on
+    a positive disagreement between two known values.
+    """
+    if not current:
+        return True
+    recorded = (state or {}).get("repo_fingerprint")
+    if not recorded:
+        return True
+    return recorded == current
+
+
+def _store_tasks(repo_root):
+    """Every open task in the store at this path, fingerprint unexamined."""
     store = repo_state_dir(repo_root)
     tasks = []
     try:
@@ -525,6 +595,112 @@ def open_tasks(repo_root):
         )
     tasks.sort(key=lambda t: t["state"].get("sealed_at") or "")
     return tasks
+
+
+def open_tasks(repo_root):
+    """Every task in the store whose lifecycle is SEALED/ACTIVE/BLOCKED,
+    oldest seal first — and which belongs to the repo now at this path.
+
+    There is no CURRENT pointer any more — several tasks may be open at once
+    (D-39) and state.json is the single authority. Tasks left open by older
+    versions become visible here instead of being masked by a stale pointer;
+    `cgel status` lists them and `cgel close --task <id>` retires them.
+
+    The store is keyed by absolute path, so a NEW repo at a reused path would
+    otherwise inherit the old one's open task — a sealed contract whose scope
+    describes code that no longer exists. Those tasks are withheld here and
+    reported by `cgel status` (see foreign_tasks).
+    """
+    tasks = _store_tasks(repo_root)
+    # Lazy: the fingerprint costs a git call, so do not pay it for the two
+    # cases that cannot need it — no tasks at all, and tasks that predate
+    # fingerprints entirely. Semantics are identical either way.
+    if not any(t["state"].get("repo_fingerprint") for t in tasks):
+        return tasks
+    current = repo_fingerprint(repo_root)
+    return [t for t in tasks if _fingerprint_ok(current, t["state"])]
+
+
+def foreign_tasks(repo_root):
+    """Open tasks in this path's store that belong to a DIFFERENT repo.
+
+    Non-empty means a repo was replaced at this path (a delete + re-clone, a
+    fresh `git init` over an old checkout). The tasks are real and their
+    evidence is intact — they just are not about this code.
+    """
+    tasks = _store_tasks(repo_root)
+    if not any(t["state"].get("repo_fingerprint") for t in tasks):
+        return []
+    current = repo_fingerprint(repo_root)
+    if not current:
+        return []
+    return [t for t in tasks if not _fingerprint_ok(current, t["state"])]
+
+
+def stale_stores(repo_root):
+    """Stores at OTHER paths that look like they belong to this repo.
+
+    A moved or renamed repo re-keys its store and loses sight of its own open
+    tasks — `cgel status` says DRAFT and the user concludes the task is gone.
+    Returns [(store_path, old_root, task_ids, confidence)] where confidence is
+    'certain' or 'possible'. Never moves anything: the caller shows the user
+    what it found and lets them decide, because git lineage is shared by
+    worktrees and clones, so a hit may be a sibling that is doing fine.
+    """
+    root = _realpath(repo_root)
+    mine = repo_state_dir(repo_root)
+    current = repo_fingerprint(repo_root)
+    prefix = os.path.basename(root) + "-"
+    hits = []
+    try:
+        names = sorted(os.listdir(state_root()))
+    except OSError:
+        return hits
+    for name in names:
+        store = os.path.join(state_root(), name)
+        if store == mine or not os.path.isdir(store):
+            continue
+        ids, fps, roots = [], set(), set()
+        try:
+            entries = sorted(os.listdir(store))
+        except OSError:
+            continue
+        for entry in entries:
+            state = None
+            try:
+                state = load_json(os.path.join(store, entry, "state.json"))
+            except Exception:
+                continue
+            if not isinstance(state, dict):
+                continue
+            if state.get("lifecycle") not in TASK_LIFECYCLES:
+                continue
+            ids.append(state.get("task_id") or entry)
+            if state.get("repo_fingerprint"):
+                fps.add(state["repo_fingerprint"])
+            if state.get("repo_root"):
+                roots.add(state["repo_root"])
+        if not ids:
+            continue
+        old_root = sorted(roots)[0] if roots else None
+        # The copy discriminator, before any lineage match. A MOVE leaves its
+        # old path empty; a `cp -r`, a clone and a `git worktree add` leave the
+        # original in place and share its lineage. Without this, copying a repo
+        # with an open task tells the user to `mv` the ORIGINAL's store onto
+        # the copy — adopting a live task away from the repo still using it.
+        if old_root and os.path.isdir(old_root) and _realpath(old_root) != root:
+            continue
+        # Strongest discriminator first.
+        if current and current in fps:
+            hits.append((store, old_root, ids, "certain"))
+        elif any(_realpath(r) == root for r in roots):
+            hits.append((store, old_root, ids, "certain"))
+        elif not fps and not roots and name.startswith(prefix):
+            # The only branch that can see a pre-0.13 store — and pre-0.13 is
+            # every store that exists today. A name match is weak evidence, so
+            # it is never presented as a paste-ready move.
+            hits.append((store, old_root, ids, "possible"))
+    return hits
 
 
 def load_task(repo_root, task_id):

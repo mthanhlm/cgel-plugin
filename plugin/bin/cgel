@@ -609,6 +609,11 @@ def cmd_seal(args):
         "lifecycle": "SEALED",
         "contract_digest": digest,
         "sealed_at": C.utc_now(),
+        # Which repo this task is about, and where it was when sealed. State
+        # only — NOT sealed_task.json, which is an export surface the user may
+        # hand to someone else. Both may be None (no git / no commits yet).
+        "repo_fingerprint": C.repo_fingerprint(root),
+        "repo_root": os.path.realpath(root),
     }
     if reseal:
         # Amending a contract must not quietly take back budget the user
@@ -2049,6 +2054,74 @@ def _status_line(root, task):
     )
 
 
+def _orphaned_report(root):
+    """A different repo now sits at this path; its predecessor's tasks are
+    still in the store. Exit 1: the user must decide, because deleting a
+    store deletes evidence."""
+    foreign = C.foreign_tasks(root)
+    if not foreign:
+        return None
+    for task in foreign:
+        print(
+            "  %s — sealed %s, %s"
+            % (
+                task["task_id"],
+                task["state"].get("sealed_at") or "unknown",
+                task["state"].get("repo_root") or "origin unknown",
+            ),
+            file=sys.stderr,
+        )
+    print(
+        "cgel: this path's state store holds %d open task(s) sealed against a "
+        "DIFFERENT repository — the store is keyed by path, and the repo at "
+        "this path has been replaced. They are not about this code, so they "
+        "are withheld: no task here is open." % len(foreign),
+        file=sys.stderr,
+    )
+    print(
+        "cgel: if you deleted and re-cloned this repo, the store is debris — "
+        "`rm -rf %s`. If this path is right and the repo is wrong, you are in "
+        "the wrong checkout." % C.repo_state_dir(root),
+        file=sys.stderr,
+    )
+    return fail("STATUS ORPHANED — %d foreign task(s)" % len(foreign))
+
+
+def _stale_store_report(root):
+    """This repo's tasks are in a store keyed by an old path (it moved)."""
+    try:
+        hits = C.stale_stores(root)
+    except Exception as exc:
+        C._debug("status:stale_stores", exc)
+        return None
+    if not hits:
+        return None
+    for store, old_root, ids, confidence in hits:
+        print(
+            "  %s — %s (%s)" % (store, ", ".join(ids), old_root or "origin unknown"),
+            file=sys.stderr,
+        )
+        if confidence == "certain":
+            print(
+                "cgel: this is your repo's store under its old path. Adopt it: "
+                "`mv %s %s`" % (store, C.repo_state_dir(root)),
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "cgel: this store's name matches this directory, but it "
+                "records no repo identity, so CGEL cannot prove it is yours. "
+                "Look first: `ls %s`. If these are yours, move it to `%s`. If "
+                "they belong to another worktree of this repo, leave it alone."
+                % (store, C.repo_state_dir(root)),
+                file=sys.stderr,
+            )
+    return fail(
+        "STATUS STALE — %d store(s) elsewhere hold this repo's open tasks"
+        % len(hits)
+    )
+
+
 def cmd_status(args):
     root = require_repo_root(args)
     tasks = C.open_tasks(root)
@@ -2061,6 +2134,15 @@ def cmd_status(args):
                 % (", ".join(t["task_id"] for t in C.open_tasks(root)) or "none"),
             )
     if not tasks:
+        # Before reporting "nothing here", account for the two ways the store
+        # and the repo can disagree. Both are silent by construction: one
+        # inherits another repo's task, the other loses sight of its own.
+        orphaned = _orphaned_report(root)
+        if orphaned:
+            return orphaned
+        stale = _stale_store_report(root)
+        if stale:
+            return stale
         for draft_path in _draft_paths(root):
             try:
                 contract = C.load_json(draft_path)

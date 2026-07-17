@@ -594,5 +594,111 @@ class CliTestCase(unittest.TestCase):
             shutil.rmtree(fresh, ignore_errors=True)
 
 
+class ScopeMatchingTestCase(CliTestCase):
+    """Phase C — a scope that does not mean what its author wrote.
+
+    Both defects here are silent in the same direction that matters: the
+    contract seals green, the summary shows the scope, the user approves it,
+    and the gate then disagrees with all three.
+    """
+
+    def scoped(self, allowed):
+        contract = copy.deepcopy(CONTRACT)
+        contract["scope"] = {"allowed": allowed}
+        return contract
+
+    def test_a_bare_directory_in_scope_is_refused(self):
+        # `src` matches no FILE — path_matches compares it against a file's
+        # relative path. scopes_overlap reads the same string as a prefix, so
+        # it seals green, warns about nothing, and authorises nothing.
+        os.makedirs(os.path.join(self.repo, "src"))
+        self.write_contract(self.scoped(["src"]))
+        code, _, err = self.cli("validate")
+        self.assertEqual(code, 1)
+        self.assertIn("is a directory", err)
+        self.assertIn("src/**", err)
+
+    def test_the_bare_directory_check_runs_at_summary_and_seal_too(self):
+        # summary is the screen the user APPROVES from. A check that only
+        # runs at validate lets the ceremony print a digest for a scope that
+        # seal will then refuse — or worse, seal and authorise nothing.
+        os.makedirs(os.path.join(self.repo, "src"))
+        self.write_contract(self.scoped(["src"]))
+        for verb in ("summary", "seal"):
+            args = [verb] if verb == "summary" else [verb, "TASK-C1", "--digest", "x"]
+            code, _, err = self.cli(*args)
+            self.assertEqual(code, 1, verb)
+            self.assertIn("is a directory", err, verb)
+
+    def test_a_directory_written_as_a_glob_is_legal(self):
+        os.makedirs(os.path.join(self.repo, "src"))
+        for allowed in (["src/**"], ["src/"]):
+            self.write_contract(self.scoped(allowed))
+            code, _, err = self.cli("validate")
+            self.assertEqual(code, 0, "%s: %s" % (allowed, err))
+
+    def test_a_wildcard_free_file_path_stays_legal_whether_or_not_it_exists(self):
+        # The check is a TYPE check (a directory is there now), never an
+        # existence oracle: a scope may legitimately create the files it names.
+        os.makedirs(os.path.join(self.repo, "src"))
+        with open(os.path.join(self.repo, "src", "here.py"), "w") as fh:
+            fh.write("x = 1\n")
+        for allowed in (["src/here.py"], ["src/not_yet.py"], ["src/new/deep.py"]):
+            self.write_contract(self.scoped(allowed))
+            code, _, err = self.cli("validate")
+            self.assertEqual(code, 0, "%s: %s" % (allowed, err))
+
+    def test_a_bare_directory_that_does_not_exist_is_the_accepted_residual(self):
+        # Stated rather than left as an absence: catching this needs an
+        # existence oracle over a scope whose job may be to create files.
+        self.write_contract(self.scoped(["not_here_yet"]))
+        code, _, _ = self.cli("validate")
+        self.assertEqual(code, 0)
+
+
+class GlobSegmentTestCase(unittest.TestCase):
+    """`**/` means whole segments. It compiled to `.*`, which crossed them."""
+
+    def setUp(self):
+        import sys
+
+        from hookrunner import SCRIPTS_DIR
+
+        sys.path.insert(0, SCRIPTS_DIR)
+        import cgel_common
+
+        self.C = cgel_common
+
+    def test_a_doubled_star_segment_does_not_match_a_partial_name(self):
+        # `src/**/impl/**` compiled to `^src/.*impl/.*$`, so `.*` ate `not`
+        # and the scope authorised a directory its author never named.
+        self.assertFalse(
+            self.C.path_matches("src/notimpl/y.py", ["src/**/impl/**"])
+        )
+        self.assertFalse(self.C.path_matches("src/ximpl/y.py", ["src/**/impl/**"]))
+
+    def test_a_doubled_star_segment_still_matches_zero_or_more_segments(self):
+        for path in ("src/impl/y.py", "src/a/impl/y.py", "src/a/b/impl/y.py"):
+            self.assertTrue(self.C.path_matches(path, ["src/**/impl/**"]), path)
+
+    def test_every_trailing_doubled_star_is_unchanged(self):
+        # The blast-radius claim: every shipped pattern is a trailing `**`,
+        # so nothing in the product changes meaning. Digests are over pattern
+        # STRINGS, not regexes, so no seal moves either.
+        for pattern, _cap in self.C.GOVERNANCE_PATH_CAPS:
+            self.assertNotIn("**/", pattern, pattern)
+        for pattern in self.C.DRAFT_EXEMPT_PATTERNS:
+            self.assertNotIn("**/", pattern, pattern)
+        self.assertTrue(self.C.path_matches("src/a/b/c.py", ["src/**"]))
+        self.assertTrue(self.C.path_matches("src/a.py", ["src/**"]))
+        self.assertFalse(self.C.path_matches("srcx/a.py", ["src/**"]))
+        self.assertTrue(self.C.path_matches("anything/at/all", ["**"]))
+        self.assertTrue(self.C.path_matches(".cgel/config.json", [".cgel/**"]))
+
+    def test_a_leading_doubled_star_still_matches_at_the_root(self):
+        self.assertTrue(self.C.path_matches("a.py", ["**/*.py"]))
+        self.assertTrue(self.C.path_matches("x/y/a.py", ["**/*.py"]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -87,6 +87,56 @@ class MultiTaskTestCase(unittest.TestCase):
         }
         return run_hook("contract_gate.py", payload, env=self.env)
 
+    # --------------------------------------- scope.forbidden is repo-wide
+    #
+    # "Must never change" is the one line in a contract a user writes
+    # expecting it to hold no matter what else is going on. It was checked
+    # per task inside the allow loop, so the FIRST task whose scope.allowed
+    # matched returned allow() and another task's forbidden never ran.
+
+    def seal_veto_pair(self, blocked=False):
+        """TASK-A forbids src/vendor/**; TASK-B may write all of src/**."""
+        os.makedirs(os.path.join(self.repo, "src", "vendor"), exist_ok=True)
+        os.makedirs(os.path.join(self.repo, "docs"), exist_ok=True)
+        a = copy.deepcopy(TASK_A)
+        a["scope"] = {"allowed": ["docs/**"], "forbidden": ["src/vendor/**"]}
+        b = copy.deepcopy(TASK_B)
+        b["task"]["id"] = "TASK-B"
+        b["scope"] = {"allowed": ["src/**"]}
+        self.seal(a)
+        self.seal(b, ".task/TASK-B.contract.json")
+
+    def test_one_tasks_forbidden_vetoes_another_tasks_allowed(self):
+        self.seal_veto_pair()
+        code, _, err = self.edit_hook("src/vendor/lib.py")
+        self.assertEqual(code, 2)
+        self.assertIn("scope.forbidden", err)
+        self.assertIn("TASK-A", err)
+        # ...without breaking the rest of TASK-B's scope
+        self.assertEqual(self.edit_hook("src/app.py")[0], 0)
+
+    def test_a_blocked_tasks_forbidden_still_vetoes(self):
+        # Blocked is not withdrawn. A task frozen mid-flight has not stopped
+        # caring what happens to the paths it said must never change.
+        self.seal_veto_pair()
+        code, _, err = self.cli("unblock")  # no-op unless blocked; ignore
+        state_dirs = []
+        for name in os.listdir(self.state):
+            path = os.path.join(self.state, name, "TASK-A", "state.json")
+            if os.path.isfile(path):
+                state_dirs.append(path)
+        self.assertTrue(state_dirs)
+        for path in state_dirs:
+            with open(path) as fh:
+                state = json.load(fh)
+            state["lifecycle"] = "BLOCKED"
+            state["blocked_reason"] = "test: frozen mid-flight"
+            with open(path, "w") as fh:
+                json.dump(state, fh)
+        code, _, err = self.edit_hook("src/vendor/lib.py")
+        self.assertEqual(code, 2)
+        self.assertIn("TASK-A", err)
+
     # ------------------------------------------------------------ hooks
 
     def test_gate_routes_each_path_to_its_covering_task(self):

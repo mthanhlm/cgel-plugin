@@ -4,9 +4,14 @@ Rooted at the FILE, not at the session: a session opened above a project
 (a monorepo root) still gates the edits it makes inside one.
 
 Blocks (exit 2) file edits unless a sealed contract covers them. Several
-tasks may be open at once (D-39): an edit is allowed when ANY open task in
-an edit lifecycle covers the path —
-  - the path matches that task's scope.allowed and not its scope.forbidden,
+tasks may be open at once (D-39), so the two halves of a scope have
+different reach:
+  - scope.forbidden is REPO-WIDE. Any open task's forbidden list vetoes the
+    path for every task, including while that task is BLOCKED (blocked is
+    not withdrawn). "Must never change" is the one line a user writes
+    expecting it to hold regardless of what else is going on.
+  - scope.allowed is per task. An edit is allowed when ANY open task in an
+    edit lifecycle names the path, and no task forbids it.
   - governance paths (.claude/**, .cgel/**, docs/standards/**, docs/adr/**,
     hook config) additionally require the matching protected capability in
     that same task's sealed contract.
@@ -68,9 +73,31 @@ def main():
         return allow()  # contract drafts and debug mirror stay writable
 
     capability = C.governance_capability_for(rel)
-    editable = [
-        t for t in C.open_tasks(repo_root) if t["lifecycle"] in C.EDIT_LIFECYCLES
+    open_tasks = C.open_tasks(repo_root)
+
+    # scope.forbidden is repo-wide, and it is checked BEFORE anything can
+    # allow. It was per-task: task B's scope.allowed silently overrode task
+    # A's "must never change", which is the one line in a contract a user
+    # writes expecting it to hold no matter what else is going on. A BLOCKED
+    # task's veto counts too — it is blocked, not withdrawn.
+    vetoes = [
+        t["task_id"]
+        for t in open_tasks
+        if C.path_matches(
+            rel, ((t.get("sealed") or {}).get("contract", {}).get("scope", {}))
+            .get("forbidden", [])
+        )
     ]
+    if vetoes:
+        return block(
+            "CGEL gate: '%s' matches scope.forbidden on %s. A forbidden path "
+            "is refused repo-wide for as long as that task is open — another "
+            "task's scope.allowed does not override it. Close that task, or "
+            "reseal it with the user if its forbidden list is wrong."
+            % (rel, ", ".join(vetoes))
+        )
+
+    editable = [t for t in open_tasks if t["lifecycle"] in C.EDIT_LIFECYCLES]
 
     if not editable:
         return block(
@@ -93,9 +120,8 @@ def main():
                 "%s: governance path needs capability '%s'" % (task_id, capability)
             )
             continue
-        if C.path_matches(rel, scope.get("forbidden", [])):
-            reasons.append("%s: matches scope.forbidden" % task_id)
-            continue
+        # No per-task forbidden check here: the repo-wide veto above already
+        # returned for every forbidden path, on every open task.
         if not C.path_matches(rel, scope.get("allowed", [])):
             reasons.append(
                 "%s: outside scope.allowed (%s)"

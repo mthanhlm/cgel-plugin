@@ -206,10 +206,18 @@ def _glob_to_regex(pattern):
         ch = pat[i]
         if ch == "*":
             if pat[i : i + 2] == "**":
-                out.append(".*")
-                i += 2
-                if i < len(pat) and pat[i] == "/":
-                    i += 1
+                if pat[i + 2 : i + 3] == "/":
+                    # `**/` means zero or more WHOLE segments. It used to
+                    # compile to `.*`, which swallowed the slash and matched
+                    # across segment boundaries: `src/**/impl/**` became
+                    # `^src/.*impl/.*$` and authorised `src/notimpl/y.py` —
+                    # a scope matching a path its author never named.
+                    out.append("(?:[^/]*/)*")
+                    i += 3
+                else:
+                    # Trailing (or bare) `**`: everything below here.
+                    out.append(".*")
+                    i += 2
             else:
                 out.append("[^/]*")
                 i += 1
@@ -220,6 +228,27 @@ def _glob_to_regex(pattern):
             out.append(re.escape(ch))
             i += 1
     return re.compile("^" + "".join(out) + "$")
+
+
+_GLOB_CHARS = ("*", "?", "[")
+
+
+def _is_bare_directory(repo_root, pattern):
+    """Is `pattern` a wildcard-free path naming a directory that exists now?
+
+    Residual, accepted: a wildcard-free pattern naming a directory that does
+    not YET exist is not caught. Catching that needs an existence oracle over
+    a scope whose whole job may be to create files, and a check that guesses
+    is one the reader learns to ignore.
+    """
+    pat = pattern.strip().replace(os.sep, "/")
+    if any(ch in pat for ch in _GLOB_CHARS) or pat.endswith("/"):
+        return False  # has wildcards, or already says "everything below"
+    try:
+        return os.path.isdir(os.path.join(repo_root, pat))
+    except OSError as exc:
+        _debug("bare_directory:%s" % pattern, exc)
+        return False
 
 
 def path_matches(rel_path, patterns):
@@ -353,7 +382,7 @@ def contract_digest(contract):
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
-def validate_contract(contract):
+def validate_contract(contract, repo_root=None):
     """Hand-rolled validation (stdlib only). Returns a list of error strings."""
     errors = []
 
@@ -411,6 +440,22 @@ def validate_contract(contract):
             for pattern in allowed:
                 if os.path.isabs(pattern) or ".." in pattern.split("/"):
                     err("scope.allowed: '%s' must be repo-relative" % pattern)
+                elif repo_root and _is_bare_directory(repo_root, pattern):
+                    # A wildcard-free pattern naming a directory matches NO
+                    # file: path_matches compares it to a file's rel path.
+                    # scopes_overlap reads the same string the opposite way
+                    # (as a prefix), so a contract scoped to `src` seals green,
+                    # warns about nothing, and then authorises nothing — the
+                    # gate refuses every edit the user believes they approved.
+                    # This is a TYPE check (a directory is here now), never an
+                    # existence oracle: a scope may legitimately create files.
+                    err(
+                        "scope.allowed: '%s' is a directory, and a directory "
+                        "matches no file — write '%s/**' (or '%s/'). "
+                        "(scopes_overlap reads it the opposite way, so this "
+                        "seals green and authorises nothing.)"
+                        % (pattern, pattern.rstrip("/"), pattern.rstrip("/"))
+                    )
         forbidden = scope.get("forbidden", [])
         if not isinstance(forbidden, list) or not all(
             isinstance(x, str) for x in forbidden

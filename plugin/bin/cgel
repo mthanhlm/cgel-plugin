@@ -262,7 +262,7 @@ def cmd_validate(args):
             "VALIDATE FAIL — no readable contract",
             "cgel: expected a contract draft at %s" % path,
         )
-    errors = C.validate_contract(contract)
+    errors = C.validate_contract(contract, root)
     if errors:
         for error in errors:
             print("  - %s" % error, file=sys.stderr)
@@ -291,7 +291,7 @@ def cmd_summary(args):
     contract, path = load_contract(root, args.contract)
     if contract is None:
         return fail("SUMMARY FAIL — no readable contract", "cgel: expected %s" % path)
-    errors = C.validate_contract(contract)
+    errors = C.validate_contract(contract, root)
     if errors:
         for error in errors:
             print("  - %s" % error, file=sys.stderr)
@@ -491,7 +491,7 @@ def cmd_seal(args):
     contract, path = load_contract(root, args.contract)
     if contract is None:
         return fail("SEAL DENIED — no readable contract", "cgel: expected %s" % path)
-    errors = C.validate_contract(contract)
+    errors = C.validate_contract(contract, root)
     if errors:
         for error in errors:
             print("  - %s" % error, file=sys.stderr)
@@ -2148,7 +2148,7 @@ def cmd_status(args):
                 contract = C.load_json(draft_path)
             except Exception:
                 continue
-            if not C.validate_contract(contract):
+            if not C.validate_contract(contract, root):
                 return ok(
                     "STATUS DRAFT task=%s (not sealed)" % contract["task"]["id"]
                 )

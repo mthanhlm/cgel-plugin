@@ -266,13 +266,15 @@ def deny_unreadable():
     No verdict is taken from the text — not a purpose, not a root, not a
     digest — so the only safe answer is no, with the remedy stated."""
     print(
-        "CGEL approval gate: this line could not be read exactly (a "
-        "redirection, a substitution, a shell reading stdin, or a `(`/`{` "
-        "group), and it looks like it may carry a gated `cgel` verb. The "
-        "gate takes no verdict from text it cannot parse — it refuses. Run "
-        "gated verbs as plain single commands — `cgel [-C /abs/dir] <verb> "
-        "…` on a line of their own — and keep unrelated commands off that "
-        "line. Approving this exact line would change nothing. Off switch: "
+        "CGEL approval gate: this line could not be read exactly — a "
+        "redirection, a `(`/`{` group, a shell reading stdin, or a backtick "
+        "or `$(`/`${` ANYWHERE on it, including inside quoted prose like a "
+        "--hypothesis string — and it looks like it may carry a gated `cgel` "
+        "verb. The gate takes no verdict from text it cannot parse — it "
+        "refuses. Run gated verbs as plain single commands — `cgel [-C "
+        "/abs/dir] <verb> …` on a line of their own — spell identifiers in "
+        "prose without backticks, and keep unrelated commands off that line. "
+        "Approving this exact line would change nothing. Off switch: "
         '.cgel/config.json {"approval_gate": "off"}.',
         file=sys.stderr,
     )

@@ -116,6 +116,11 @@ check can measure should plan for `close --as ESCALATE` from the start.
    The recorded answer is the approval — the gate verifies it from the
    transcript and lets the seal through with no further prompt. Do NOT also
    ask for a chat "approve" on top: one gate, not two.
+   - Plain prose only on that line: a backtick or `$(` anywhere in the
+     --hypothesis/--change text — even inside quotes — makes the line
+     unreadable to the approval gate, which refuses a line it cannot read.
+     Spell identifiers without backticks, or seal first and open the
+     iteration as a second call.
    - If `Protected capabilities:` is anything but `none`, the question MUST
      name each capability in plain words ("this task may edit the hook
      config") — never smuggle a protected seal past them. Read it off the

@@ -883,11 +883,13 @@ class ApprovalTestCase(unittest.TestCase):
     # ------------------------------- the remedy must clear the deny it names
     #
     # "A control that cannot be satisfied is not a control; it is a wedge, and
-    # the only exit from a wedge is the off switch" (D-47). Both deny messages
-    # prescribe an absolute `-C`. _from_text extracted dash_c and then threw it
-    # away, so on the fallback path the prescribed remedy did not move the
-    # verdict — and deny_unrootable says in the same breath that approving
-    # changes nothing. A user who did exactly as told had no exit left.
+    # the only exit from a wedge is the off switch" (D-47). An earlier draft
+    # of this change prescribed an absolute `-C` in every refusal while its
+    # text fallback extracted that flag and then threw it away — so on that
+    # path the prescribed remedy did not move the verdict, and the message
+    # said in the same breath that approving changes nothing. A user who did
+    # exactly as told had no exit left. Each refusal now names only a remedy
+    # its own path honours, and these tests take each remedy at its word.
 
     def test_the_remedy_each_deny_prescribes_actually_clears_it(self):
         # UPDATED, not deleted: the premise is D-47's wedge rule — a control

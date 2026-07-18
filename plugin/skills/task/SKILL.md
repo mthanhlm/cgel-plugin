@@ -62,8 +62,15 @@ domain, risk level, and whether any **protected capability** is involved
 `modify-evaluation-baseline`, `external-write`, `dependency-change`,
 `schema-migration`, `public-api-change`). Inspect the repo read-only as
 needed — use the `cgel:explorer` subagent for broad recon instead of
-flooding your own context. If the goal or scope is genuinely ambiguous, ask
-the user now — the contract must not silently reinterpret their intent.
+flooding your own context. If anything about the user's intent is genuinely
+unclear — the goal, the scope, the acceptance bar, or which of several
+approaches they want — INTERVIEW them before drafting: ask focused questions
+through AskUserQuestion and let their answers shape the contract, instead of
+guessing and encoding the guess. One good round of questions beats five
+rounds of building the wrong thing. Reserve it for real ambiguity — a
+request whose intent is already plain does not need an interview, and asking
+anyway is its own noise — but when the intent is unclear the contract must
+not silently reinterpret their intent.
 
 Then judge the intent itself. Your job is the best change, not obedience:
 the user may hand you a design that does not fit this codebase or will not

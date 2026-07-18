@@ -90,6 +90,14 @@ class ChallengeTheIntentProse(unittest.TestCase):
     def test_the_job_is_the_best_change_not_obedience(self):
         self.assertIn("the best change, not obedience", skill_text("task"))
 
+    def test_unclear_intent_triggers_an_interview(self):
+        # Genuinely unclear intent must be interviewed, not guessed at — the
+        # official "interview you for a spec" practice, gated to real
+        # ambiguity so a plain request is not asked to death.
+        text = skill_text("task")
+        self.assertIn("INTERVIEW them before drafting", text)
+        self.assertIn("One good round of questions beats five", text)
+
     def test_a_wrong_design_is_named_before_sealing(self):
         self.assertIn(
             "say so BEFORE sealing", skill_text("task")

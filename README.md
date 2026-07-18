@@ -530,7 +530,7 @@ conflicts. MCP interface for the control plane: decide with Phase 1 usage
 data.
 
 Design record: [ARCHITECT.md](ARCHITECT.md) — the signed-off CGEL v1.0
-consolidated architecture, plus the post-v1.0 amendments D-35..D-50 that
+consolidated architecture, plus the post-v1.0 amendments D-35..D-51 that
 record every change since. [ROADMAP.md](ROADMAP.md) holds the parts that
 were designed and never built — it is a wish list, kept apart from the
 design record on purpose.

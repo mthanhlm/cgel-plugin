@@ -26,11 +26,12 @@ ever decide the task this session owns.
 3. **CHANGE** — edit inside `scope.allowed` only. Mechanical bulk edits can
    go to the `cgel:worker` subagent with an exact spec; decisions stay
    here. Build to the production bar, especially in a messy codebase:
-   reuse existing helpers instead of duplicating them, fix root causes
-   instead of papering over them, update every caller/test/doc the change
-   touches (CGEL-IMPACT-1 BLOCKS and the verifier greps for it; CGEL-DEBT-1
-   advises — it still reaches the user, it just cannot stop PASS on its
-   own). Leave code cleaner than you found it: never write a
+   reuse existing helpers instead of duplicating them, fix the root cause
+   instead of papering over it (CGEL-ROOT-1 BLOCKS), catch the null-check
+   and edge case in your own diff (CGEL-CORRECT-1 BLOCKS), and update every
+   caller/test/doc the change touches (CGEL-IMPACT-1 BLOCKS and the verifier
+   greps for all three; CGEL-DEBT-1 and CGEL-TEST-1 advise — they still
+   reach the user, they just cannot stop PASS on their own). Leave code cleaner than you found it: never write a
    comment that just restates what the code does, and delete any redundant
    or obsolete comment you pass through in a file you're already editing —
    even one you did not write. Comments earn their place by explaining

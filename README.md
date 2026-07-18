@@ -142,23 +142,31 @@ question or starts new work in the same repo:
 
 ## The production bar (built-in review rules)
 
-Four rules ship with the plugin and merge into every project's rule set
-(`cgel rules` lists them as `cgel-builtin`). **Two block and two advise**:
+Seven rules ship with the plugin and merge into every project's rule set
+(`cgel rules` lists them as `cgel-builtin`). **Four block and three advise**:
 
 | Rule | Blocks? | What the verifier must actually do |
 |---|---|---|
 | `CGEL-IMPACT-1` — all impacted code updated | **yes** | grep for stale references and old call shapes of every changed symbol |
+| `CGEL-CORRECT-1` — no defect the change introduces | **yes** | read the changed lines for a null/None deref, unchecked error, off-by-one, resource leak, or broken invariant, and point at the line |
+| `CGEL-ROOT-1` — a fix cures the cause, not the symptom | **yes** | for a fix, judge whether it removes the cause or only hides the symptom — swallowed error, symptom-masking special case, race papered by a retry |
 | `CGEL-SECRET-1` — no hardcoded secrets | **yes** | scan changed files for credential/token/password shapes |
-| `CGEL-DEBT-1` — no new technical debt | advisory | find duplicated logic, dead code, workarounds where the root cause was in reach |
+| `CGEL-DEBT-1` — no new technical debt | advisory | find duplicated logic, dead code, needlessly widened public surface |
+| `CGEL-TEST-1` — new behavior ships with a test | advisory | check that added or altered behavior has a test that would fail without it |
 | `CGEL-COMMENT-1` — comments earn their place | advisory | flag narration, ownerless TODOs, commented-out code, debug prints |
 
-The split is about **ground truth, not importance**. IMPACT-1 and SECRET-1
-can be checked by searching — a stale call site is there or it is not — so
-a finding is checkable and a block is arguable. DEBT-1 and COMMENT-1 are
-judgements of taste about duplication and comment quality; blocking on
-taste, at close, with an ungated ESCALATE as the only exit, is how a lint
-gate earns itself a config flag turning it off. All four still run, are
-recorded, and reach the human; only the first two can stop a PASS.
+The split is mostly about **ground truth, not importance**. IMPACT-1,
+SECRET-1 and CORRECT-1 are settled by pointing at a line — a stale call
+site, a key shape, a null deref is there or it is not — so a finding is
+checkable and a block is arguable. ROOT-1 is the block taken off that
+principle on purpose: whether a fix cures or hides the cause is a judgement,
+but a patchwork fix quietly accruing debt is the failure the bar exists to
+stop, so it blocks — scoped to that one call and softenable by a same-id
+project override or `builtin_rules: off`. DEBT-1, TEST-1 and COMMENT-1 are
+taste — duplication, coverage, comment quality — and blocking on taste at
+close, with an ungated ESCALATE as the only exit, is how a lint gate earns
+itself a config flag turning it off, so they advise. All seven run, are
+recorded, and reach the human; four can stop a PASS.
 
 Because blocking rules always exist, **semantic verification is required at
 medium+ risk in every CGEL repo**: the opus verifier runs, its findings are
@@ -182,7 +190,7 @@ shapes:
 
 ```text
 Semantic verification: REQUIRED (blocking rules present at risk.level=medium)
-  the read-only verifier will judge this change against: CGEL-IMPACT-1, CGEL-SECRET-1
+  the read-only verifier will judge this change against: CGEL-CORRECT-1, CGEL-IMPACT-1, CGEL-ROOT-1, CGEL-SECRET-1
   a blocking finding stops PASS.
 
 Semantic verification: NOT REQUIRED at risk.level=low — no rule will judge
@@ -521,7 +529,7 @@ conflicts. MCP interface for the control plane: decide with Phase 1 usage
 data.
 
 Design record: [ARCHITECT.md](ARCHITECT.md) — the signed-off CGEL v1.0
-consolidated architecture, plus the post-v1.0 amendments D-35..D-48 that
+consolidated architecture, plus the post-v1.0 amendments D-35..D-49 that
 record every change since. [ROADMAP.md](ROADMAP.md) holds the parts that
 were designed and never built — it is a wish list, kept apart from the
 design record on purpose.

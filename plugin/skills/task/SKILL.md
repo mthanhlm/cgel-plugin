@@ -159,13 +159,15 @@ If a needed check is missing from `.cgel/registry.json`, that is a
 governance change: add it before sealing, or via a dedicated
 `modify-verification-registry` task — never mid-task.
 
-The production bar: two built-in rules BLOCK (`CGEL-IMPACT-1` all impacted
-code updated, `CGEL-SECRET-1` no hardcoded secrets) and two ADVISE
-(`CGEL-DEBT-1` no new debt, `CGEL-COMMENT-1` comment quality). The blocking
-pair make semantic verification required at medium+ risk, and the verifier
-will grep, not guess. Write code that survives that review the first time —
-including the advisory findings, which reach the user even when they cannot
-stop a PASS.
+The production bar: four built-in rules BLOCK (`CGEL-IMPACT-1` all impacted
+code updated, `CGEL-CORRECT-1` no defect the change introduces, `CGEL-ROOT-1`
+a fix cures the cause not the symptom, `CGEL-SECRET-1` no hardcoded secrets)
+and three ADVISE (`CGEL-DEBT-1` no new debt, `CGEL-TEST-1` new behavior ships
+with a test, `CGEL-COMMENT-1` comment quality). The blocking rules make
+semantic verification required at medium+ risk, and the verifier will grep,
+not guess. Write code that survives that review the first time — including
+the advisory findings, which reach the user even when they cannot stop a
+PASS.
 
 Whether ANY of it runs depends on `risk.level`, and there is no default.
 State it and argue it in `risk.reasons`:

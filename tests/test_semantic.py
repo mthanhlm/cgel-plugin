@@ -91,19 +91,21 @@ class SemanticTestCase(unittest.TestCase):
 
     # -------------------------------------------------------------- rules
 
-    BUILTIN_IDS = ["CGEL-COMMENT-1", "CGEL-DEBT-1", "CGEL-IMPACT-1", "CGEL-SECRET-1"]
-    # The split is about ground truth, not importance: IMPACT-1 and SECRET-1
-    # are checkable by searching, so a block is arguable. DEBT-1 and COMMENT-1
-    # are judgements of taste, and blocking on taste at close — with an
-    # ungated ESCALATE as the only exit — is how a lint gate earns itself an
-    # off switch. They still run and still reach the human.
-    BLOCKING_BUILTIN_IDS = ["CGEL-IMPACT-1", "CGEL-SECRET-1"]
-    ADVISORY_BUILTIN_IDS = ["CGEL-COMMENT-1", "CGEL-DEBT-1"]
+    BUILTIN_IDS = ["CGEL-COMMENT-1", "CGEL-CORRECT-1", "CGEL-DEBT-1",
+                   "CGEL-IMPACT-1", "CGEL-ROOT-1", "CGEL-SECRET-1",
+                   "CGEL-TEST-1"]
+    # Four block, three advise (D-49). IMPACT-1, SECRET-1 and CORRECT-1 are
+    # checkable by pointing at a line, so a block is arguable; ROOT-1 blocks
+    # off that principle by deliberate choice. DEBT-1, TEST-1 and COMMENT-1
+    # are taste and only advise. All run and all reach the human.
+    BLOCKING_BUILTIN_IDS = ["CGEL-CORRECT-1", "CGEL-IMPACT-1",
+                            "CGEL-ROOT-1", "CGEL-SECRET-1"]
+    ADVISORY_BUILTIN_IDS = ["CGEL-COMMENT-1", "CGEL-DEBT-1", "CGEL-TEST-1"]
 
     def test_rules_parsed_with_builtins(self):
         code, out, err = self.cli("rules")
         self.assertEqual(code, 0)
-        self.assertIn("RULES OK — 6 rule(s), 3 blocking", decision_line(out))
+        self.assertIn("RULES OK — 9 rule(s), 5 blocking", decision_line(out))
         self.assertIn("SEC-1 [BLOCKING]", err)
         self.assertIn("STYLE-1", err)
         self.assertIn("cgel-builtin", err)
@@ -131,7 +133,7 @@ class SemanticTestCase(unittest.TestCase):
         )
         code, out, err = self.cli("rules")
         self.assertEqual(code, 0)
-        self.assertIn("RULES OK — 6 rule(s), 2 blocking", decision_line(out))
+        self.assertIn("RULES OK — 9 rule(s), 4 blocking", decision_line(out))
         self.assertIn("our own impact policy", err)
         self.assertNotIn("CGEL-IMPACT-1 [BLOCKING]", err)
 
@@ -391,7 +393,8 @@ class SemanticTestCase(unittest.TestCase):
         path = os.path.join(PLUGIN_ROOT, "agents", "verifier.md")
         with open(path) as fh:
             text = fh.read()
-        for rule_id in ("CGEL-IMPACT-1", "CGEL-DEBT-1", "CGEL-COMMENT-1",
+        for rule_id in ("CGEL-IMPACT-1", "CGEL-CORRECT-1", "CGEL-ROOT-1",
+                        "CGEL-DEBT-1", "CGEL-TEST-1", "CGEL-COMMENT-1",
                         "CGEL-SECRET-1"):
             self.assertIn(rule_id, text)
 

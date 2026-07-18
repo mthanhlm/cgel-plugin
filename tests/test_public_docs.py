@@ -137,14 +137,15 @@ class TheProductionBarIsDescribedAsItIs(unittest.TestCase):
                 rules[current] = line.split(":", 1)[1].strip() == "yes"
         return rules
 
-    def test_two_block_and_two_advise(self):
+    def test_which_rules_block_and_which_advise(self):
         rules = self._blocking()
         self.assertEqual(
-            {r for r, b in rules.items() if b}, {"CGEL-IMPACT-1", "CGEL-SECRET-1"}
+            {r for r, b in rules.items() if b},
+            {"CGEL-IMPACT-1", "CGEL-SECRET-1", "CGEL-CORRECT-1", "CGEL-ROOT-1"},
         )
         self.assertEqual(
             {r for r, b in rules.items() if not b},
-            {"CGEL-DEBT-1", "CGEL-COMMENT-1"},
+            {"CGEL-DEBT-1", "CGEL-COMMENT-1", "CGEL-TEST-1"},
         )
 
     def _every_shipped_description(self):
@@ -167,12 +168,20 @@ class TheProductionBarIsDescribedAsItIs(unittest.TestCase):
                     with open(path, encoding="utf-8") as fh:
                         yield os.path.relpath(path, PLUGIN_ROOT), fh.read()
 
-    def test_no_shipped_prose_calls_all_four_blocking(self):
+    def test_no_shipped_prose_keeps_the_stale_two_two_split(self):
+        # Before D-49 the split was two block, two advise; prose that still
+        # says so is a doc that missed the update. The live split is four
+        # block, three advise (test_which_rules_block_and_which_advise pins
+        # the sets from builtin.md).
         for label, text in self._every_shipped_description():
             flat = " ".join(text.split())
-            self.assertNotIn("Four blocking rules", flat, label)
-            self.assertNotIn("four blocking rules", flat, label)
-            self.assertNotIn("blocking review rules (impacted code", flat, label)
+            self.assertNotIn("Two block and two advise", flat, label)
+            self.assertNotIn("two block and two advise", flat, label)
+            # The manifest's own enumeration of the split — the drift the
+            # phrase-only guard first let through (the description names what
+            # blocks and what advises, and that has to track builtin.md too).
+            self.assertNotIn("impacted code and secrets block", flat, label)
+            self.assertNotIn("tech debt and comments advise", flat, label)
 
     def test_no_shipped_prose_calls_an_advisory_rule_blocking(self):
         # The specific stale claim the verifier found: prose asserting that a
@@ -194,9 +203,10 @@ class TheProductionBarIsDescribedAsItIs(unittest.TestCase):
 
     def test_the_readme_names_which_rules_block(self):
         readme = " ".join(read("README.md").split())
-        for rule_id in ("CGEL-IMPACT-1", "CGEL-SECRET-1"):
+        for rule_id in ("CGEL-IMPACT-1", "CGEL-SECRET-1", "CGEL-CORRECT-1",
+                        "CGEL-ROOT-1"):
             self.assertIn(rule_id, readme)
-        self.assertIn("Two block and two advise", readme)
+        self.assertIn("Four block and three advise", readme)
 
 
 class TheRiskLevelIsDocumentedAsAClaim(unittest.TestCase):

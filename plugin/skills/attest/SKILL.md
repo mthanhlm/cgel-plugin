@@ -30,9 +30,10 @@ git diff HEAD -- <the changed files>     # plus `git diff --cached`, and the
 Paste the diff into the prompt. It holds no Bash tool, so it cannot obtain
 one for itself — if you do not send it, it does not exist.
 
-This matters more than it looks. Rules like CGEL-IMPACT-1 and
-CGEL-COMMENT-1 are defined over the CHANGE ("every symbol *this change*
-renamed", "the comments *in the change*"). Handed only a file list, the
+This matters more than it looks. Rules like CGEL-IMPACT-1, CGEL-CORRECT-1,
+CGEL-ROOT-1 and CGEL-COMMENT-1 are defined over the CHANGE ("every symbol
+*this change* renamed", "the defect *this change* introduces", "the comments
+*in the change*"). Handed only a file list, the
 verifier reviews each file's entire history and reports on that — which
 reads exactly like a real review and is not one. If the diff is genuinely
 unavailable, say so in the prompt in those words; the verifier fails closed

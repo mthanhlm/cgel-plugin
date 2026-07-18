@@ -17,6 +17,12 @@ from datetime import datetime, timezone
 
 CONTRACT_REL_PATH = ".task/contract.json"
 DRAFT_EXEMPT_PATTERNS = [".task/**"]
+# Root memory files the model may write during onboarding — before any task is
+# sealed — so a fresh repo can be given a tailored CLAUDE.md. Exact
+# repo-relative names only: a nested `sub/CLAUDE.md` is not one of these, and
+# `.claude/CLAUDE.md` stays a governance path. contract_gate honours this ONLY
+# while no task governs the repo.
+ROOT_MEMORY_FILES = {"CLAUDE.md", "CLAUDE.local.md"}
 REGISTRY_REL_PATH = ".cgel/registry.json"
 EVIDENCE_FILE = "evidence.jsonl"
 EVENTS_FILE = "events.jsonl"

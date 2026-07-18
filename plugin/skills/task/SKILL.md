@@ -38,6 +38,18 @@ If there is no `.cgel/` directory and the user explicitly invoked
    on `.cgel/**` (governance path) and never Bash file redirection.
 3. Tell the user in one short list what was initialized and which checks
    were registered, then continue with intake below.
+4. If the repo has no `CLAUDE.md` yet, write one now — this is the one
+   moment it is writable without a sealed scope, because no task governs the
+   repo yet (the gate exempts root `CLAUDE.md`/`CLAUDE.local.md` only here;
+   the moment you seal the first task it follows normal scope like any
+   other file). Read enough of the codebase to write a CONCISE, tailored
+   CLAUDE.md at the repo root: the build/test/lint commands a new session
+   cannot guess, the code style that departs from the language default, the
+   architecture in a few lines, the non-obvious gotchas, and repo etiquette.
+   Keep it under ~200 lines and omit anything a competent reader already
+   assumes — it is read every session, so bloat costs every session. Tell
+   the user you wrote it and that they can refine it or regenerate it with
+   `/init`.
 
 `cgel check add` works only while no task is open; once sealed, the
 registry is frozen inside the governance bundle.

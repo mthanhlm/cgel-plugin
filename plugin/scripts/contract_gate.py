@@ -82,6 +82,16 @@ def main():
     capability = C.governance_capability_for(rel)
     open_tasks = C.open_tasks(repo_root)
 
+    # Root memory files (CLAUDE.md, CLAUDE.local.md) are writable during the
+    # onboarding window — when NO task governs the repo yet — so a fresh
+    # project can be given a tailored CLAUDE.md before the first seal. The
+    # moment any task is SEALED/ACTIVE/BLOCKED this falls through to normal
+    # scope, so the model cannot rewrite its own memory mid-task, unscoped and
+    # unrecorded. Nested CLAUDE.md and .claude/CLAUDE.md are not root memory
+    # files and stay gated (the latter as a governance path).
+    if not open_tasks and rel in C.ROOT_MEMORY_FILES:
+        return allow()
+
     # scope.forbidden is repo-wide, and it is checked BEFORE anything can
     # allow. It was per-task: task B's scope.allowed silently overrode task
     # A's "must never change", which is the one line in a contract a user

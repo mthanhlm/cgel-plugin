@@ -59,6 +59,7 @@ design, debate rounds v0.1→v1.0). All four MVP phases are implemented:
 | No Edit/Write before a sealed contract | `PreToolUse` gate (`scripts/contract_gate.py`) | HARD_ENFORCED for Edit/Write/NotebookEdit |
 | Edits only inside `scope.allowed`, never `scope.forbidden` | same gate, sealed scope read from the state store (not the editable draft) | HARD_ENFORCED for Edit/Write/NotebookEdit |
 | Governance paths (`.claude/**`, `.cgel/**`, `docs/standards/**`, `docs/adr/**`, hook config) read-only unless the sealed contract grants the matching protected capability | same gate | HARD_ENFORCED for Edit/Write/NotebookEdit |
+| Root `CLAUDE.md`/`CLAUDE.local.md` writable only during onboarding | same gate: exempt when NO task governs the repo (before the first seal), so a fresh project can be given a tailored CLAUDE.md; once any task is SEALED/ACTIVE/BLOCKED they follow normal scope, and a nested or `.claude/CLAUDE.md` is never exempt | HARD_ENFORCED for the exemption condition; writing a good CLAUDE.md is GUIDANCE_ONLY |
 | Seal binds the exact contract the user saw | digest ceremony: `cgel summary` → one AskUserQuestion carrying the digest → user taps Approve → `cgel seal <id> --digest sha256:...` (the approval gate verifies the recorded answer and lets the seal through with no further prompt) | HUMAN_GATED via the harness-recorded question answer (tamper-evident; the permission prompt remains the harder anchor if you keep an `ask` rule and turn the gate off) |
 | User's uncommitted work is protected | dirty-tree check at seal (`--allow-dirty` only after explicit user confirmation) | EVIDENCE_GATED |
 | No destructive git commands | `PreToolUse` Bash guard (`scripts/command_guard.py`), fail-closed | guardrail on the command string |
@@ -529,7 +530,7 @@ conflicts. MCP interface for the control plane: decide with Phase 1 usage
 data.
 
 Design record: [ARCHITECT.md](ARCHITECT.md) — the signed-off CGEL v1.0
-consolidated architecture, plus the post-v1.0 amendments D-35..D-49 that
+consolidated architecture, plus the post-v1.0 amendments D-35..D-50 that
 record every change since. [ROADMAP.md](ROADMAP.md) holds the parts that
 were designed and never built — it is a wish list, kept apart from the
 design record on purpose.

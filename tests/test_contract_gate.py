@@ -154,6 +154,50 @@ class GateTestCase(GateFixture):
         code, _, _ = self.edit("src/app.py")
         self.assertEqual(code, 2)
 
+    # -------------------------------------------- root memory files (D-50)
+
+    def test_root_claude_md_writable_before_any_seal(self):
+        # The onboarding window: no task governs the repo yet, so a fresh
+        # project can be given a tailored CLAUDE.md before the first seal.
+        code, _, err = self.edit("CLAUDE.md")
+        self.assertEqual(code, 0, err)
+
+    def test_root_claude_local_md_writable_before_any_seal(self):
+        code, _, err = self.edit("CLAUDE.local.md")
+        self.assertEqual(code, 0, err)
+
+    def test_claude_md_gated_once_a_task_is_sealed(self):
+        # The moment a task governs the repo, CLAUDE.md follows normal scope:
+        # the fixture scope (src/**, tests/**) does not name it, so the model
+        # cannot rewrite its own memory mid-task, unscoped.
+        self.seal()
+        code, _, err = self.edit("CLAUDE.md")
+        self.assertEqual(code, 2)
+        self.assertIn("outside scope.allowed", err)
+
+    def test_claude_md_writable_mid_task_when_deliberately_in_scope(self):
+        # The exemption is not the only door in: a task that names CLAUDE.md
+        # can still edit it.
+        contract = json.loads(json.dumps(CONTRACT))
+        contract["task"]["id"] = "TASK-MEM"
+        contract["scope"]["allowed"] = ["CLAUDE.md"]
+        self.seal(contract)
+        code, _, err = self.edit("CLAUDE.md")
+        self.assertEqual(code, 0, err)
+
+    def test_dot_claude_claude_md_is_not_a_root_memory_file(self):
+        # .claude/CLAUDE.md is a governance path, not a root memory file, so
+        # the onboarding exemption never reaches it — blocked even with no
+        # task open.
+        code, _, _ = self.edit(".claude/CLAUDE.md")
+        self.assertEqual(code, 2)
+
+    def test_nested_claude_md_is_not_exempt(self):
+        # Only the repo-root CLAUDE.md is a memory file; a nested one is
+        # ordinary application content and stays gated.
+        code, _, _ = self.edit("subdir/CLAUDE.md")
+        self.assertEqual(code, 2)
+
     def test_malformed_stdin_fails_open(self):
         code, _, _ = run_hook(
             "contract_gate.py", None, env=self.env, raw_stdin="{not json"

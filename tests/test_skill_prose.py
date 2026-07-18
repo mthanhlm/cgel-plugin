@@ -188,6 +188,17 @@ class GovernanceProse(unittest.TestCase):
         self.assertIn("CGEL never touches the checkout", skill_text("loop"))
 
 
+class OnboardingProse(unittest.TestCase):
+    def test_onboarding_writes_a_tailored_claude_md(self):
+        # The onboarding step must actually tell the model to write CLAUDE.md
+        # — the feature is a GUIDANCE_ONLY instruction; the gate only makes it
+        # possible before the first seal.
+        self.assertIn(
+            "write a CONCISE, tailored CLAUDE.md at the repo root",
+            skill_text("task"),
+        )
+
+
 class HooksAreAControlPlane(unittest.TestCase):
     def test_every_hook_only_invokes_a_bundled_script(self):
         _, commands = hook_commands()

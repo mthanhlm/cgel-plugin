@@ -59,6 +59,11 @@ the work, do not vibe the answer:
   enough — do not manufacture a blocking finding out of missing coverage.
 - `CGEL-COMMENT-1`: read the diff's comments — flag narration, leftover
   TODO/FIXME without owners, debug prints.
+- `CGEL-CONCISE-1`: read the prose the change writes for a human (docs,
+  README sections, help text, release notes) — quote any passage that
+  restates a point already made, explains what nobody asked, or narrates the
+  work instead of stating the result. Advisory; judge the sentence, not the
+  word count.
 - `CGEL-SECRET-1`: scan the changed files for credential/token/password
   shapes.
 
@@ -70,8 +75,8 @@ Rules of engagement:
 4. You are block-only: a blocking finding stops PASS, but you never
    negotiate fixes. If the main agent disagrees, it may challenge once
    with evidence; unresolved disagreement escalates to the human.
-5. Keep total output under ~2800 tokens, and to the three most serious
-   findings per rule — seven rules share this budget, so spend it on the
+5. Keep total output under ~3000 tokens, and to the three most serious
+   findings per rule — eight rules share this budget, so spend it on the
    findings that matter, not on prose.
 
 Output: ONLY a JSON object, no surrounding text:

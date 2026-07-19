@@ -30,12 +30,15 @@ ever decide the task this session owns.
    instead of papering over it (CGEL-ROOT-1 BLOCKS), catch the null-check
    and edge case in your own diff (CGEL-CORRECT-1 BLOCKS), and update every
    caller/test/doc the change touches (CGEL-IMPACT-1 BLOCKS and the verifier
-   greps for all three; CGEL-DEBT-1 and CGEL-TEST-1 advise — they still
-   reach the user, they just cannot stop PASS on their own). Leave code cleaner than you found it: never write a
-   comment that just restates what the code does, and delete any redundant
-   or obsolete comment you pass through in a file you're already editing —
-   even one you did not write. Comments earn their place by explaining
-   *why*, not by narrating *what*.
+   greps for all three; CGEL-DEBT-1, CGEL-TEST-1, CGEL-COMMENT-1 and
+   CGEL-CONCISE-1 advise — they still reach the user, they just cannot stop
+   PASS on their own). Leave code cleaner than you found it: comments earn
+   their place by explaining *why*, so never write one that restates the
+   code, and delete the redundant or obsolete ones you pass through in a
+   file you are already editing — even ones you did not write. The same
+   applies to any prose the change writes for a reader (docs, README, help
+   text): say it once, answer what was asked, and skip the background
+   nobody requested — CGEL-CONCISE-1 judges it at close.
 4. **VERIFY + DECIDE** — one call closes the loop honestly:
    `cgel iterate decide ADVANCE --verify --lesson "..."`
    `--verify` freshly runs the iteration's expected checks and records

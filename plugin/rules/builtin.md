@@ -5,26 +5,24 @@ Shipped with the plugin and merged into every project's rule set unless
 the same id in `docs/standards/` replaces the built-in — the host owns its
 yardstick. They exist because production work fails the same few ways
 everywhere: half-updated call sites, quietly added debt, comment slop,
-leaked secrets. The verifier judges them all and records every finding.
+prose nobody can forward, leaked secrets.
 
-Four are BLOCKING and three are ADVISORY, and the split is mostly about
-ground truth, not importance. CGEL-IMPACT-1, CGEL-SECRET-1 and CGEL-CORRECT-1
-can be settled by pointing at a line: a stale call site is there or it is
-not, a key shape matches or it does not, a null dereference on an unguarded
-path is reachable or it is not — so a finding is checkable and a block is
-arguable. CGEL-ROOT-1 is the block the project chose to accept off that
-principle: whether a fix cures the cause or hides the symptom is a
-judgement, not a search, but a patchwork fix that quietly accrues debt is
-the failure this bar exists to stop, so it blocks — scoped narrowly to that
-one call, and softenable by a same-id override in docs/standards or by
-turning the built-ins off. CGEL-DEBT-1, CGEL-TEST-1 and CGEL-COMMENT-1 are
-judgements of taste about duplication, test coverage and comment quality;
-blocking on taste, at close, with an ungated ESCALATE as the only exit, is
-how a lint gate earns itself a config flag turning it off, so they advise.
-Everything runs, is recorded, and reaches the human — the advisory three
-just do not stop a PASS on their own.
+Four BLOCK and four ADVISE, and the split is about ground truth, not
+importance. CGEL-IMPACT-1, CGEL-SECRET-1 and CGEL-CORRECT-1 are settled by
+pointing at a line — a stale call site, a key shape, a null dereference on
+an unguarded path is there or it is not — so a finding is checkable and a
+block is arguable. CGEL-ROOT-1 is the block taken off that principle by
+choice: whether a fix cures the cause or hides the symptom is a judgement,
+not a search, but a patchwork fix that quietly accrues debt is the failure
+this bar exists to stop — scoped narrowly to that one call, and softenable
+by a same-id override in docs/standards or by turning the built-ins off.
+CGEL-DEBT-1, CGEL-TEST-1, CGEL-COMMENT-1 and CGEL-CONCISE-1 are judgements
+of taste; blocking on taste, at close, with an ungated ESCALATE as the only
+exit, is how a lint gate earns itself a config flag turning it off, so they
+advise. All eight run, are recorded, and reach the human — the advisory
+four just do not stop a PASS on their own.
 
-Honesty: all seven are EVIDENCE_GATED model judgments, recorded and escalated
+Honesty: all eight are EVIDENCE_GATED model judgments, recorded and escalated
 to the human on disagreement — not deterministic proofs.
 
 ## CGEL-IMPACT-1 — All impacted code is updated
@@ -96,6 +94,21 @@ choices — and never narrate what the code already says. No leftover
 TODO/FIXME without an owner, no commented-out code, no debug prints or
 temporary logging in the final diff.
 Evidence expected: the diff's comments read as constraints, not narration.
+
+## CGEL-CONCISE-1 — Prose for a reader is ready to hand over
+Blocking: no
+Owner: cgel
+Requirement: prose the change writes for a human — documentation, README
+sections, reports, summaries, help text, release notes, close reasons —
+answers what was asked and stops. Three failures name it: the same point
+restated in different words, background or justification the reader did not
+ask for, and narration of the work ("first I looked at", "as mentioned
+above") where the result belongs. The bar is whether the text could be
+handed to a stakeholder unedited. Length is not the charge — an unnecessary
+sentence is one at any length, and a long document that earns every line
+passes. Code comments belong to CGEL-COMMENT-1, not to this rule.
+Evidence expected: the redundant or unrequested passage quoted with path and
+line — or a pass stating the prose in the diff was read.
 
 ## CGEL-SECRET-1 — No hardcoded secrets
 Blocking: yes

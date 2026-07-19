@@ -76,7 +76,7 @@ when the user wants it out, push:
 - The commit message meets the repo's own bar: read `git log` for the
   house style; imperative subject ≤72 chars; a body only when it explains
   *why*. No debug leftovers in the diff — the verifier's CGEL-COMMENT-1
-  already blocked them, keep it that way. Do not commit without their
+  advises on exactly that, so do not ship past it. Do not commit without their
   answer; uncommitted task output is what trips the NEXT seal's dirty
   check.
 - Pushing is its own approval: the question quotes the exact

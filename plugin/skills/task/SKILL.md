@@ -192,8 +192,9 @@ governance change: add it before sealing, or via a dedicated
 The production bar: four built-in rules BLOCK (`CGEL-IMPACT-1` all impacted
 code updated, `CGEL-CORRECT-1` no defect the change introduces, `CGEL-ROOT-1`
 a fix cures the cause not the symptom, `CGEL-SECRET-1` no hardcoded secrets)
-and three ADVISE (`CGEL-DEBT-1` no new debt, `CGEL-TEST-1` new behavior ships
-with a test, `CGEL-COMMENT-1` comment quality). The blocking rules make
+and four ADVISE (`CGEL-DEBT-1` no new debt, `CGEL-TEST-1` new behavior ships
+with a test, `CGEL-COMMENT-1` comment quality, `CGEL-CONCISE-1` prose written
+for a reader is forwardable as-is). The blocking rules make
 semantic verification required at medium+ risk, and the verifier will grep,
 not guess. Write code that survives that review the first time — including
 the advisory findings, which reach the user even when they cannot stop a
@@ -243,6 +244,12 @@ ritual.
 
 ## Talking to the user
 
-Progress notes are one line. Explanations are plain language, six lines at
-most, no CGEL vocabulary unless the user uses it first. When the work is
-done, say what changed and what proved it — not how the loop felt.
+Everything you write for the user is held to `CGEL-CONCISE-1`, the same bar
+the verifier applies to prose in the diff. Progress notes are one line;
+explanations are plain language, six lines at most, no CGEL vocabulary
+unless the user uses it first. Answer first, evidence second: do not restate
+the request before answering it, do not explain background nobody asked for,
+and do not narrate the steps you took — when the work is done, say what
+changed and what proved it, not how the loop felt. A summary the user has to
+edit before forwarding it failed; if a document is the deliverable, write it
+to be handed on as-is.

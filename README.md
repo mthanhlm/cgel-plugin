@@ -143,8 +143,8 @@ question or starts new work in the same repo:
 
 ## The production bar (built-in review rules)
 
-Seven rules ship with the plugin and merge into every project's rule set
-(`cgel rules` lists them as `cgel-builtin`). **Four block and three advise**:
+Eight rules ship with the plugin and merge into every project's rule set
+(`cgel rules` lists them as `cgel-builtin`). **Four block and four advise**:
 
 | Rule | Blocks? | What the verifier must actually do |
 |---|---|---|
@@ -155,6 +155,7 @@ Seven rules ship with the plugin and merge into every project's rule set
 | `CGEL-DEBT-1` — no new technical debt | advisory | find duplicated logic, dead code, needlessly widened public surface |
 | `CGEL-TEST-1` — new behavior ships with a test | advisory | check that added or altered behavior has a test that would fail without it |
 | `CGEL-COMMENT-1` — comments earn their place | advisory | flag narration, ownerless TODOs, commented-out code, debug prints |
+| `CGEL-CONCISE-1` — prose for a reader is ready to hand over | advisory | quote prose in the diff that restates a point, explains what nobody asked, or narrates the work instead of the result |
 
 The split is mostly about **ground truth, not importance**. IMPACT-1,
 SECRET-1 and CORRECT-1 are settled by pointing at a line — a stale call
@@ -163,11 +164,12 @@ checkable and a block is arguable. ROOT-1 is the block taken off that
 principle on purpose: whether a fix cures or hides the cause is a judgement,
 but a patchwork fix quietly accruing debt is the failure the bar exists to
 stop, so it blocks — scoped to that one call and softenable by a same-id
-project override or `builtin_rules: off`. DEBT-1, TEST-1 and COMMENT-1 are
-taste — duplication, coverage, comment quality — and blocking on taste at
-close, with an ungated ESCALATE as the only exit, is how a lint gate earns
-itself a config flag turning it off, so they advise. All seven run, are
-recorded, and reach the human; four can stop a PASS.
+project override or `builtin_rules: off`. DEBT-1, TEST-1, COMMENT-1 and
+CONCISE-1 are taste — duplication, coverage, comment quality, prose a reader
+can forward unedited — and blocking on taste at close, with an ungated
+ESCALATE as the only exit, is how a lint gate earns itself a config flag
+turning it off, so they advise. All eight run, are recorded, and reach the
+human; four can stop a PASS.
 
 Because blocking rules always exist, **semantic verification is required at
 medium+ risk in every CGEL repo**: the opus verifier runs, its findings are
@@ -530,7 +532,7 @@ conflicts. MCP interface for the control plane: decide with Phase 1 usage
 data.
 
 Design record: [ARCHITECT.md](ARCHITECT.md) — the signed-off CGEL v1.0
-consolidated architecture, plus the post-v1.0 amendments D-35..D-52 that
+consolidated architecture, plus the post-v1.0 amendments D-35..D-53 that
 record every change since. [ROADMAP.md](ROADMAP.md) holds the parts that
 were designed and never built — it is a wish list, kept apart from the
 design record on purpose.

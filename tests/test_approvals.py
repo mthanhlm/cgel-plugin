@@ -97,6 +97,43 @@ class ApprovalTestCase(unittest.TestCase):
         self.assertIn("AskUserQuestion", err)
         self.assertIn(DIGEST_PREFIX, err)
 
+    def test_short_digest_prefix_still_does_not_bind(self):
+        # The binding predicate is unchanged: an 8-hex prefix in the question is
+        # not the 12-hex token, so the seal is still DENIED. The fix is on the
+        # asking side (summary prints the token), never a wider bind here.
+        short = DIGEST[: len("sha256:") + 8]
+        self.write_transcript(
+            transcript_entry("Seal this? digest %s…" % short, "Approve")
+        )
+        code, _, err = self.gate(SEAL_COMMAND)
+        self.assertEqual(code, 2)
+        self.assertIn(DIGEST_PREFIX, err)
+
+    def test_deny_names_the_short_prefix_near_miss(self):
+        # When an APPROVED question named this same digest but too briefly, the
+        # deny must say so — otherwise the model reads "include the digest
+        # prefix", believes it did, and re-asks the user for a contract they
+        # already approved. This is the diagnostic that ends the double tap.
+        short = DIGEST[: len("sha256:") + 8]
+        self.write_transcript(
+            transcript_entry("Seal this? digest %s…" % short, "Approve")
+        )
+        code, _, err = self.gate(SEAL_COMMAND)
+        self.assertEqual(code, 2)
+        self.assertIn("too few to bind", err)
+        self.assertIn("cgel summary", err)
+
+    def test_deny_for_unrelated_digest_has_no_near_miss_note(self):
+        # The note fires only on a genuine prefix of THIS digest. An approval
+        # for a different contract must not be described as a near-miss.
+        other = "sha256:" + "ffffffff" + "0" * 4
+        self.write_transcript(
+            transcript_entry("Seal this? digest %s…" % other, "Approve")
+        )
+        code, _, err = self.gate(SEAL_COMMAND)
+        self.assertEqual(code, 2)
+        self.assertNotIn("too few to bind", err)
+
     def test_seal_with_recorded_approval_allowed_no_prompt(self):
         self.write_transcript(
             transcript_entry("Seal this? digest %s…" % DIGEST_PREFIX, "Approve")

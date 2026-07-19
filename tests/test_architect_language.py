@@ -106,6 +106,14 @@ class TranslationIsFaithful(unittest.TestCase):
         self.assertIn("D-35", text)
         self.assertIn("principle #3", text)
 
+    def test_d52_records_why_the_binding_floor_stays(self):
+        # The double-approval fix was on the asking side; the decision to NOT
+        # lower what an approval binds to is the load-bearing part, and it must
+        # stay written so a later reader does not "simplify" it away.
+        text = architect()
+        self.assertIn("D-52", text)
+        self.assertIn("grindable", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,12 @@ PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "scripts"))
 import cgel_common as C
 
+# The seal ceremony has two halves in two processes: this CLI prints the token
+# the approval question must carry, and the PreToolUse gate checks the question
+# carried it. The length is imported, never restated — a second copy of it here
+# would drift, and the drift is invisible until a user is asked to approve twice.
+import approval_gate
+
 # CGEL adds nothing to a host project's history: the runtime mirror and the
 # registry both stay local. The registry being local means each clone starts
 # with no checks and must register its own before any evidence can exist.
@@ -364,6 +370,15 @@ def cmd_summary(args):
             "will judge this change and no finding can stop PASS. Only the "
             "registered checks grade it." % c["risk"]["level"]
         )
+    # The approval question must carry this exact string or the gate cannot
+    # bind the tap to this contract. Printing only the 64-hex digest left the
+    # model to invent a truncation; an 8-char guess is not a substring of the
+    # 12-char token, so the seal was denied and the user was asked a SECOND
+    # time for the same contract. Name the token; do not widen what binds.
+    lines.append(
+        "Approval token — paste this EXACT string into the approval question: %s"
+        % digest[: approval_gate.DIGEST_PREFIX_LEN]
+    )
     for line in lines:
         print(line, file=sys.stderr)
 

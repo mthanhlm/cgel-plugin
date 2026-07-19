@@ -127,6 +127,23 @@ class SealCeremonyProse(unittest.TestCase):
     def test_seal_binds_the_exact_digest(self):
         self.assertIn("Seal with the EXACT digest", skill_text("task"))
 
+    def test_approval_token_is_copied_verbatim_not_abbreviated(self):
+        # The double-approval bug: the model shortened the digest itself, the
+        # truncation did not bind, and the user was asked to approve the same
+        # contract twice. The skill must say to copy the token from summary,
+        # not retype or shorten it.
+        text = skill_text("task")
+        self.assertIn("approval token", text)
+        self.assertIn("Copy it, never retype it.", text)
+
+    def test_dirty_reseal_question_must_quote_the_exact_command(self):
+        # An --allow-dirty seal binds to the exact command string, not the
+        # token, so the reseal question must quote the whole command in
+        # backticks or the approval will not bind — a second tap.
+        self.assertIn(
+            "binds to the EXACT command string, not the token", skill_text("task")
+        )
+
     def test_contract_may_not_reinterpret_intent(self):
         self.assertIn(
             "the contract must not silently reinterpret their intent",

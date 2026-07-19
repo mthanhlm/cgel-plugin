@@ -108,17 +108,24 @@ check can measure should plan for `close --as ESCALATE` from the start.
 ## 4. One question seals it
 
 1. Run `cgel summary` — it validates the draft and prints the normalized
-   summary and a digest line. (No separate `cgel validate` roundtrip.)
+   summary, a digest line, and an **approval token** line. (No separate
+   `cgel validate` roundtrip.)
 2. Ask ONE AskUserQuestion. Plain words, at most ~6 short lines — say what
    you'll do, not how CGEL works. No jargon: translate scope to "files
-   I'll touch" and checks to "what must pass". Include the digest so the
-   approval binds to this exact contract:
+   I'll touch" and checks to "what must pass". Copy the approval token into
+   it so the approval binds to this exact contract:
 
    > Goal: fix the login redirect loop
    > Files: src/auth/** (about 3 files)
    > Must pass: unit-tests, lint
    > Risk: medium — it is the auth path; a review will judge it
-   > Seal digest sha256:ab12cd34ef56…
+   > Seal digest sha256:ab12cd34ef56
+
+   Paste the token from `cgel summary` VERBATIM. It is matched as a literal
+   substring, so shortening it — even by one character — means it does not
+   bind and the seal is denied, and the user is then asked to approve the
+   very same contract a SECOND time. Trailing text after the whole token is
+   harmless; a truncation is not. Copy it, never retype it.
 
    Read the risk back honestly. `Risk: medium` on an auth fix is the
    claim you should be making; `low` here would be the reflex the old
@@ -146,7 +153,11 @@ check can measure should plan for `close --as ESCALATE` from the start.
      summary; it is your duty, not a flag the CLI enforces.
    - If seal is denied for dirty files, STOP and ask (same question form,
      listing the files); only reseal with `--allow-dirty` after their
-     explicit confirmation.
+     explicit confirmation. Unlike a plain seal, an `--allow-dirty` seal
+     binds to the EXACT command string, not the token — so the question
+     must quote the whole command in backticks (e.g. `cgel seal <ID>
+     --digest <token> --allow-dirty`), or the approval will not bind and
+     the user is asked again.
 
 ## 5. Work inside the seal
 

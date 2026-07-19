@@ -420,7 +420,7 @@ absolute path — `cgel -C /path/to/project seal ...` — and no `cd` is needed.
 | `cgel init` | activate CGEL for the project (`.cgel/`, `.task/`, registry stub; empties `attribution.*` in `.claude/settings.json`) |
 | `cgel check add/list/doctor/remove` | register (refused if the command passes with no project present; `--watch` globs scope staleness) / list / re-test every check from both sides — must fail empty *and* pass in-tree / remove a check (between tasks only) |
 | `cgel validate` | schema-check the contract draft |
-| `cgel summary` | validate + normalized contract summary + digest (put the digest in the approval question) |
+| `cgel summary` | validate + normalized contract summary + digest + the approval token to paste verbatim into the approval question (a truncated token does not bind) |
 | `cgel seal <id> --digest <d>` | freeze contract + governance bundle; opens the edit gate; resealing the same digest reuses its approval |
 | `cgel iterate open/decide` | declare an iteration (`--change`, `--expect`) / record ADVANCE, RETRY, REPLAN, ROLLBACK_ITERATION — prefixes work (ADV, RET…); `decide --verify` freshly runs the expected checks first |
 | `cgel verify <id>... [--required]` | run registered check(s) in one call, record hash-chained evidence per check; `--required` covers every check the criteria name |
@@ -530,7 +530,7 @@ conflicts. MCP interface for the control plane: decide with Phase 1 usage
 data.
 
 Design record: [ARCHITECT.md](ARCHITECT.md) — the signed-off CGEL v1.0
-consolidated architecture, plus the post-v1.0 amendments D-35..D-51 that
+consolidated architecture, plus the post-v1.0 amendments D-35..D-52 that
 record every change since. [ROADMAP.md](ROADMAP.md) holds the parts that
 were designed and never built — it is a wish list, kept apart from the
 design record on purpose.

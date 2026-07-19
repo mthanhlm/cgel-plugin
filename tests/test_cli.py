@@ -83,6 +83,35 @@ class CliTestCase(CliFixture):
     # capabilities the user is about to approve — is a real property, so it
     # gets an honest test of its own below.
 
+    # ------------------------------------------- the approval token is printed
+    #
+    # The gate binds a seal to the first 12 hex of the digest, matched as a
+    # literal substring of the approved question. When summary printed only the
+    # full 64-hex digest, the model chose its own truncation, the guess did not
+    # contain the 12-char token, and the seal was denied for a contract the user
+    # had already approved — a second tap for the same seal. Summary must name
+    # the exact token, and it must be a genuine prefix of the sealing digest, or
+    # a copy of it still would not bind.
+
+    def test_summary_prints_the_exact_approval_token(self):
+        self.write_contract(CONTRACT)
+        code, out, err = self.cli("summary")
+        self.assertEqual(code, 0, err)
+        digest = decision_line(out).split("digest=")[1].split()[0]
+        token = digest[: len("sha256:") + 12]
+        self.assertIn(token, err)
+        # The gate would refuse a shorter prefix; the printed token must be at
+        # least the 12 hex the gate demands, never an 8-char courtesy.
+        self.assertGreaterEqual(len(token.split(":", 1)[1]), 12)
+
+    def test_summary_decision_line_is_still_last(self):
+        # The token line goes to stderr; the machine-parseable SUMMARY line must
+        # remain the last line of STDOUT, or the seal flow reads the wrong thing.
+        self.write_contract(CONTRACT)
+        code, out, _ = self.cli("summary")
+        self.assertEqual(code, 0)
+        self.assertTrue(out.strip().splitlines()[-1].startswith("SUMMARY "))
+
     def test_summary_discloses_what_the_user_is_approving(self):
         self.write_contract(CONTRACT)
         code, out, err = self.cli("summary")

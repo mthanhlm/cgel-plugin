@@ -227,6 +227,16 @@ class TheRiskLevelIsDocumentedAsAClaim(unittest.TestCase):
         self.assertIn("there is no default", skill)
 
 
+class TheReadmeNamesTheApprovalToken(unittest.TestCase):
+    """The seal ceremony bound to a 12-hex digest token nothing printed; the
+    README's `cgel summary` line must now name the token the user pastes, or a
+    reader building the ceremony repeats the double-approval failure."""
+
+    def test_readme_summary_line_names_the_approval_token(self):
+        readme = " ".join(read("README.md").split())
+        self.assertIn("approval token", readme)
+
+
 class TheSchemasMatchTheValidator(unittest.TestCase):
     """A schema that disagrees with the validator is the same defect as a doc
     that disagrees with the code — and worse here, because task/SKILL.md tells

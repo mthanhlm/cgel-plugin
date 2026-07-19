@@ -104,6 +104,47 @@ _CGEL_GLOBAL_WITH_VALUE = frozenset(("-C", "--directory"))
 _DIGEST_SHAPE = re.compile(r"^sha256:[0-9a-fA-F]{8,64}$")
 DIGEST_PREFIX_LEN = len("sha256:") + 12
 
+# A digest as it appears in prose, at any truncation. Read ONLY after the
+# binding predicate has already refused, to explain WHICH near-miss happened.
+_DIGEST_IN_TEXT = re.compile(r"sha256:([0-9a-fA-F]{4,64})")
+
+
+def _short_prefix_note(transcript, digest):
+    """A deny-message suffix when an APPROVED question named this contract's
+    digest, but too briefly to bind.
+
+    Diagnostic, never a verdict. It runs after `find_approval` has said no and
+    can only change the words of a refusal — the module's one-decider rule
+    holds, and text still never authorises. It exists because the failure it
+    names is invisible otherwise: the model reads 'include the digest prefix',
+    believes it did, and re-asks the user for a contract they already
+    approved."""
+    body = (digest.split(":", 1) + [""])[1].lower()
+    if not body:
+        return ""
+    try:
+        answers = approvals.iter_answers(transcript)
+    except Exception as exc:  # a diagnostic must never turn a deny into a crash
+        C._debug("approval_gate:short_prefix_note", exc)
+        return ""
+    for _key, blob, answer, _at in answers:
+        if not (answer or "").strip().lower().startswith("approve"):
+            continue
+        for match in _DIGEST_IN_TEXT.finditer(blob):
+            seen = match.group(1).lower()
+            if len(seen) < len(body) and body.startswith(seen):
+                return (
+                    " An approved question DID name this contract, as "
+                    "`sha256:%s` — %d hex character(s), too few to bind. The "
+                    "token is the first %d and is deliberately not widened: a "
+                    "shorter prefix is cheap to grind, and this digest is the "
+                    "only thing stopping an approval of one contract from "
+                    "sealing a different one. Do not abbreviate it yourself — "
+                    "`cgel summary` prints the exact string to paste."
+                    % (seen, len(seen), DIGEST_PREFIX_LEN - len("sha256:"))
+                )
+    return ""
+
 
 def _has_flag(args, name):
     """True when `--flag` is present in either spelling argparse accepts.
@@ -229,15 +270,15 @@ def _whole_line_is_bare_cgel(segments):
     return True
 
 
-def deny(purpose, ask_for):
+def deny(purpose, ask_for, note=""):
     print(
         "CGEL approval gate: %s needs the user's recorded approval. Ask with "
         "the AskUserQuestion tool first — a short plain-language brief (goal, "
         "files, checks, risk), options starting with 'Approve' — and include "
         "%s in the question or an option so the approval binds to exactly "
-        "this action. Then rerun the command. The user may instead run it "
+        "this action. Then rerun the command.%s The user may instead run it "
         "themselves. Off switch: .cgel/config.json {\"approval_gate\": "
-        '"off"}.' % (purpose, ask_for),
+        '"off"}.' % (purpose, ask_for, note),
         file=sys.stderr,
     )
     return 2
@@ -410,7 +451,11 @@ def main():
         )
         found = by_digest or by_command
         if not found:
-            return deny("`cgel seal`", "the digest prefix `%s…`" % token)
+            return deny(
+                "`cgel seal`",
+                "the digest prefix `%s…`" % token,
+                _short_prefix_note(transcript, digest),
+            )
         plans.append((root, found[0], "seal", [token]))
         if by_command:
             whole_line_read = True

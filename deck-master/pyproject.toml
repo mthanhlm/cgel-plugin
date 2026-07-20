@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deckmaster"
+version = "0.1.0"
+description = "Native, dependency-free generation of editable .pptx decks from structured data."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+# Intentionally empty. The generator runs on the Python standard library alone:
+# zipfile, json, math, pathlib, argparse, dataclasses, and xml.etree for
+# validation. No python-pptx, no pptxgenjs, no LibreOffice, and no network
+# access at generation time. tests/unit/test_standalone.py enforces this.
+dependencies = []
+
+[project.optional-dependencies]
+# lxml is used ONLY by the schema tests in tests/integration/test_package.py
+# against the bundled ISO-29500 schemas. It must never be imported from src/;
+# tests/unit/test_standalone.py enforces that boundary.
+dev = ["pytest>=8", "lxml>=5"]
+
+[project.scripts]
+deckmaster = "deckmaster.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+deckmaster = ["data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

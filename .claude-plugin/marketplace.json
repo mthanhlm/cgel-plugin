@@ -8,6 +8,11 @@
       "name": "cgel",
       "source": "./plugin",
       "description": "Contract-Gated Evidence Loop — sealed task contracts, hash-chained verification evidence, budgeted iterations, read-only semantic verifier, evidence-gated PASS, no AI attribution on commits/PRs."
+    },
+    {
+      "name": "deck-master",
+      "source": "./deck-master",
+      "description": "Builds editable .pptx decks from structured data with no presentation library, no template and no rendering engine. Diagram-first: architecture, flow and comparison slides rather than bullet lists. Text is measured against real Arial metrics before any box is sized, so nothing overflows; a geometric audit blocks collisions, off-canvas shapes and dangling connectors; output is validated against the published ISO-29500 schemas and is byte-for-byte deterministic. Runs on the Python standard library alone."
     }
   ]
 }

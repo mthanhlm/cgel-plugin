@@ -1,0 +1,9 @@
+{
+  "name": "deck-master",
+  "version": "0.1.0",
+  "description": "Builds editable .pptx decks from structured data with no presentation library, no template and no rendering engine. Diagram-first by default: architecture, flow and comparison slides rather than bullet lists. Text is measured against real Arial metrics before any box is sized, so nothing overflows; a geometric audit blocks text collisions, off-canvas shapes and dangling connectors; an offline OOXML validator checks element order, identifier ranges and relationship integrity so PowerPoint opens the file without a repair prompt. Output is byte-for-byte deterministic and every shape stays native and editable. Runs on the Python standard library alone.",
+  "author": {
+    "name": "mthanhlm"
+  },
+  "license": "MIT"
+}

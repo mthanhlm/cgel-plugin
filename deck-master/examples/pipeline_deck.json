@@ -1,0 +1,163 @@
+{
+  "title": "Deck Master",
+  "author": "Deck Master",
+  "slides": [
+    {
+      "type": "title",
+      "title": "Slides are a layout problem",
+      "subtitle": "Deck Master treats them like one. Structured data in, editable decks out."
+    },
+    {
+      "type": "diagram",
+      "title": "Four stages, no renderer",
+      "subtitle": "Each stage is a pure function of the one before it.",
+      "ranks": [
+        {
+          "nodes": [
+            {
+              "id": "input",
+              "label": "Structured input",
+              "caption": "JSON or Python"
+            }
+          ]
+        },
+        {
+          "nodes": [
+            {
+              "id": "model",
+              "label": "Document model",
+              "caption": "meaning, not coordinates"
+            }
+          ]
+        },
+        {
+          "label": "Layout",
+          "caption": "measures, then places",
+          "boxed": true,
+          "nodes": [
+            {
+              "id": "measure",
+              "label": "Measure text",
+              "caption": "real Arial metrics"
+            },
+            {
+              "id": "place",
+              "label": "Place shapes",
+              "caption": "on the spacing scale"
+            }
+          ]
+        },
+        {
+          "nodes": [
+            {
+              "id": "pptx",
+              "label": "OOXML package",
+              "caption": "editable shapes",
+              "emphasis": true
+            }
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "source": "input",
+          "target": "model"
+        },
+        {
+          "source": "model",
+          "target": "measure"
+        },
+        {
+          "source": "place",
+          "target": "pptx",
+          "label": "emit"
+        }
+      ],
+      "footnote": "Nothing is rasterised. Every box, line and label stays a native shape you can select and edit."
+    },
+    {
+      "type": "diagram",
+      "title": "The audit runs before the file exists",
+      "subtitle": "Geometry findings block the build. Style findings are advisory.",
+      "ranks": [
+        {
+          "nodes": [
+            {
+              "id": "laid",
+              "label": "Laid-out slide",
+              "caption": "absolute geometry"
+            }
+          ]
+        },
+        {
+          "label": "Audit",
+          "caption": "blocking checks",
+          "boxed": true,
+          "nodes": [
+            {
+              "id": "overflow",
+              "label": "Text overflow",
+              "caption": "measured, not guessed"
+            },
+            {
+              "id": "collide",
+              "label": "Collisions",
+              "caption": "pairwise bounds"
+            },
+            {
+              "id": "canvas",
+              "label": "Off-canvas",
+              "caption": "every shape in frame"
+            }
+          ]
+        },
+        {
+          "nodes": [
+            {
+              "id": "write",
+              "label": "Write package",
+              "caption": "only if clean",
+              "emphasis": true
+            }
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "source": "laid",
+          "target": "overflow"
+        },
+        {
+          "source": "canvas",
+          "target": "write",
+          "label": "pass"
+        }
+      ]
+    },
+    {
+      "type": "key_value",
+      "title": "Three guarantees",
+      "subtitle": "Each one is a test, not an intention.",
+      "dark": true,
+      "entries": [
+        {
+          "label": "Opens without repair",
+          "body": "A package validator checks element order, identifier ranges and relationships offline."
+        },
+        {
+          "label": "Nothing overflows",
+          "body": "Text is measured against real Arial advance widths before any box is sized."
+        },
+        {
+          "label": "Rebuilds are identical",
+          "body": "Fixed part order and a frozen timestamp make the bytes stable across machines."
+        }
+      ]
+    },
+    {
+      "type": "statement",
+      "title": "One message per slide",
+      "subtitle": "If a slide needs two, it is two slides."
+    }
+  ]
+}

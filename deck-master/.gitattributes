@@ -1,0 +1,10 @@
+# The bundled ECMA schemas are redistributed on condition that they stay
+# unmodified (see tests/schemas/NOTICE). They ship with CRLF line terminators,
+# and this repository has core.autocrlf=input, which rewrites them to LF on
+# commit -- storing bytes that are not the published files, while the working
+# tree still looks correct.
+#
+# `-text` disables end-of-line conversion so the stored blobs are byte-identical
+# to the ECMA distribution. Do not remove this: the condition the NOTICE relies
+# on depends on it, and nothing about the working tree would reveal the breach.
+tests/schemas/*.xsd -text

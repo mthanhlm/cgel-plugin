@@ -1,0 +1,72 @@
+ECMA-376 Office Open XML — Transitional XML Schemas
+===================================================
+
+These files are part of a published international standard. They are third-party
+specification artefacts, not part of this project, and they are redistributed
+here unmodified under the terms recorded below.
+
+Publisher   ECMA International
+Standard    ECMA-376 Part 4, 5th edition (December 2016)
+            "Office Open XML File Formats — Transitional Migration Features"
+            Equivalent to ISO/IEC 29500-4:2016.
+Source      https://www.ecma-international.org/wp-content/uploads/ECMA-376-4_5th_edition_december_2016.zip
+            → OfficeOpenXML-XMLSchema-Transitional.zip
+Retrieved   2026-07
+
+Terms
+-----
+
+ECMA International's text copyright policy grants a perpetual, irrevocable right
+to copy and redistribute the standard, on two conditions that this directory is
+arranged to satisfy:
+
+  1. The files are redistributed WITHOUT MODIFICATION.
+  2. This notice travels with them.
+
+Both are load-bearing rather than courtesies. Do not edit these files. Beyond
+the licence, an edited schema would silently change what every test that uses it
+means, while still reporting green.
+
+`SHA256SUMS` records the digest of each file as published, and a test asserts
+them on every run. Note that the distribution is not uniform — some files ship
+with CRLF line terminators and some with LF — so `.gitattributes` disables
+end-of-line conversion for this directory. Without it, a checkout configured
+with `core.autocrlf` rewrites the CRLF files on commit and the stored bytes stop
+being the published ones, while the working tree still looks correct.
+
+If the checksum test fails, do not regenerate the manifest. Find out what
+changed the files.
+
+The policy covers copyright. Any patent rights in the underlying formats are a
+separate matter, addressed by Microsoft's Open Specification Promise.
+
+Files
+-----
+
+Nine files: pml.xsd and the transitive closure of its schemaLocation imports.
+The full distribution is 27 files; the remainder describe SpreadsheetML,
+WordprocessingML, VML and shared parts this project never emits.
+
+  pml.xsd                        PresentationML — slides, masters, layouts
+  dml-main.xsd                   DrawingML — shapes, text, colour, geometry
+  dml-chart.xsd                  charts
+  dml-chartDrawing.xsd           drawings within charts
+  dml-diagram.xsd                SmartArt
+  dml-lockedCanvas.xsd           locked canvas
+  dml-picture.xsd                pictures
+  shared-commonSimpleTypes.xsd   shared simple types
+  shared-relationshipReference.xsd  r:id, r:embed and related attributes
+
+Alongside them:
+
+  NOTICE                         this file
+  SHA256SUMS                     published digests, asserted by the test suite
+  README.md                      what is validated and why
+
+Why they are here
+-----------------
+
+The test suite validates generated parts against the specification rather than
+against rules restated by hand. See README.md in this directory for what is
+covered, what is deliberately exempt, and why this lives under tests/ rather
+than src/.

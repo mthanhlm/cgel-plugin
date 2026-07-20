@@ -1,0 +1,24 @@
+.cgel/
+.claude/
+.task/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+
+# Generated decks
+*.pptx
+*.drawio
+
+# Stray downloads from tooling experiments
+*.deb
+
+# The golden fixture is a real presentation, so it may be internal material.
+# Covered by *.pptx above; named here so the reason is findable. Do not add a
+# negation to track it -- that is how it ended up in a published repository's
+# history once already. See CLAUDE.md, "Two things that will bite you".

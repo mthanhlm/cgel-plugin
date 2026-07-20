@@ -1,7 +1,7 @@
 {
   "name": "cgel",
-  "version": "0.16.0",
-  "description": "Contract-Gated Evidence Loop — sealed task contracts with scope-gated edits, approvals by one AskUserQuestion tap (seal, unblock, overrides, git push) instead of typed commands, several tasks open in parallel per repo, a frozen governance bundle, hash-chained verification evidence with watch-scoped staleness, budgeted iterations with a default-same failure guard, built-in review rules judged by an opus verifier (impacted code, introduced defects, root-cause fixes, and secrets block; debt, test coverage, comments, and prose a reader can forward advise), a design challenger that questions weak plans before sealing, an evidence-gated PASS with sanitized attestations, and commits/PRs authored solely by you — never AI-attributed.",
+  "version": "0.16.1",
+  "description": "Contract-Gated Evidence Loop — sealed task contracts with scope-gated edits, approvals by one AskUserQuestion tap (seal, unblock, overrides, git push) instead of typed commands, several tasks open in parallel per repo, a frozen governance bundle, hash-chained verification evidence with watch-scoped staleness, budgeted iterations with a default-same failure guard, built-in review rules judged by an opus verifier (impacted code, introduced defects, root-cause fixes, and secrets block; debt, test coverage, comments, and prose that leads with the action and a reader can forward advise), a design challenger that questions weak plans before sealing, an evidence-gated PASS with sanitized attestations, and commits/PRs authored solely by you — never AI-attributed.",
   "author": {
     "name": "mthanhlm"
   },

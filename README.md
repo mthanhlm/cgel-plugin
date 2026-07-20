@@ -155,7 +155,7 @@ Eight rules ship with the plugin and merge into every project's rule set
 | `CGEL-DEBT-1` — no new technical debt | advisory | find duplicated logic, dead code, needlessly widened public surface |
 | `CGEL-TEST-1` — new behavior ships with a test | advisory | check that added or altered behavior has a test that would fail without it |
 | `CGEL-COMMENT-1` — comments earn their place | advisory | flag narration, ownerless TODOs, commented-out code, debug prints |
-| `CGEL-CONCISE-1` — prose for a reader is ready to hand over | advisory | quote prose in the diff that restates a point, explains what nobody asked, or narrates the work instead of the result |
+| `CGEL-CONCISE-1` — prose for a reader is ready to hand over | advisory | quote prose in the diff that restates a point, explains what nobody asked, narrates the work instead of the result, buries the action under a wind-up, or leaves ordered steps as a paragraph |
 
 The split is mostly about **ground truth, not importance**. IMPACT-1,
 SECRET-1 and CORRECT-1 are settled by pointing at a line — a stale call
@@ -532,7 +532,7 @@ conflicts. MCP interface for the control plane: decide with Phase 1 usage
 data.
 
 Design record: [ARCHITECT.md](ARCHITECT.md) — the signed-off CGEL v1.0
-consolidated architecture, plus the post-v1.0 amendments D-35..D-53 that
+consolidated architecture, plus the post-v1.0 amendments D-35..D-54 that
 record every change since. [ROADMAP.md](ROADMAP.md) holds the parts that
 were designed and never built — it is a wish list, kept apart from the
 design record on purpose.

@@ -93,3 +93,11 @@ information, not an obstacle to route around.
 If the user aborted the task, close now (`ROLLED_BACK`/`ABORT`) — no
 farewell verify runs, no attestation theater. `close` deletes the matching
 draft from `.task/` so the next task starts clean.
+
+## The closing report
+
+What changed, what proved it, what is left for the user — in that order,
+and nothing before it. No recap of the request, no tour of the iterations,
+no closing pleasantry. Anything still owed to the user (a commit to
+approve, a finding to judge, a follow-up) is the last line and is one
+concrete action, numbered if there is more than one.

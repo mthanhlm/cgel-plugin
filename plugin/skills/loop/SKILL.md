@@ -37,8 +37,10 @@ ever decide the task this session owns.
    code, and delete the redundant or obsolete ones you pass through in a
    file you are already editing — even ones you did not write. The same
    applies to any prose the change writes for a reader (docs, README, help
-   text): say it once, answer what was asked, and skip the background
-   nobody requested — CGEL-CONCISE-1 judges it at close.
+   text): say it once, answer what was asked, skip the background nobody
+   requested, put the command or `file:line` ahead of the reasoning, and
+   number steps that must happen in order — CGEL-CONCISE-1 judges it at
+   close.
 4. **VERIFY + DECIDE** — one call closes the loop honestly:
    `cgel iterate decide ADVANCE --verify --lesson "..."`
    `--verify` freshly runs the iteration's expected checks and records
@@ -90,3 +92,11 @@ Do not stop mid-iteration: the Stop gate sends you back (bounded) if an
 iteration has no decision. If the user aborts, record one honest decision
 and close — skip any further verification runs; the task is over. When
 work is done, follow `cgel:attest` for semantic verification and closing.
+
+What you tell the user between iterations is one line, and it leads with
+the state, not the story: the check that failed and the error it printed,
+or what now passes. Report a failure flatly — "unit-tests: 3 failures,
+first is tests/test_seal.py:88 expected 0 got 1" — never dressed in
+alarm and never re-explained on the next turn. If the user has to decide
+something, the decision is the first line and the evidence follows it;
+where they have several ordered things to do, number them.

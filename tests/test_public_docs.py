@@ -228,6 +228,94 @@ class TheProductionBarIsDescribedAsItIs(unittest.TestCase):
         self.assertIn("background nobody asked for", skill)
 
 
+class ProseLeadsWithTheAction(unittest.TestCase):
+    """Concision alone still permits the shape users complain about: a
+    correct, non-redundant paragraph that makes the reader hunt for the
+    command. So CGEL-CONCISE-1 charges burial and unnumbered ordered steps
+    too, and the skills say it about session output — where the rule cannot
+    reach, because nothing there lands in a diff.
+
+    What the guidance governs is order, so the assertions pin the phrases
+    that carry it rather than the word "action" — text merely containing
+    that word reads exactly the way this change exists to stop. Position is
+    checked in one place only, where inverting it would invert the meaning.
+    """
+
+    def normalized(self, *parts):
+        return " ".join(read(*parts).split())
+
+    def test_the_rule_charges_burial_and_unnumbered_steps(self):
+        rules = self.normalized("plugin", "rules", "builtin.md")
+        self.assertIn("Five failures name it", rules)
+        self.assertIn("ahead of the thing the reader has to do", rules)
+        self.assertIn("run together as a paragraph", rules)
+        self.assertIn("number steps that must happen in order", rules)
+
+    def test_the_rule_still_protects_prose_that_was_asked_to_explain(self):
+        # Without this the rule reads as a mandate to clip, and a verifier
+        # would flag a walkthrough the user explicitly requested.
+        rules = self.normalized("plugin", "rules", "builtin.md")
+        self.assertIn("asked to explain, teach, or walk through", rules)
+        self.assertIn("the explanation IS the answer", rules)
+
+    def test_the_verifier_is_told_to_look_for_it(self):
+        # A rule the verifier's duty list never mentions is a rule that
+        # runs on nothing (CGEL-IMPACT-1 on our own docs).
+        duties = self.normalized("plugin", "agents", "verifier.md")
+        self.assertIn("buries the command", duties)
+        self.assertIn("runs ordered steps together as a paragraph", duties)
+
+    def test_the_readme_table_matches_the_rule(self):
+        readme = self.normalized("README.md")
+        self.assertIn("buries the action under a wind-up", readme)
+        self.assertIn("leaves ordered steps as a paragraph", readme)
+
+    def test_the_task_skill_puts_the_action_first(self):
+        skill = self.normalized("plugin", "skills", "task", "SKILL.md")
+        self.assertIn("Lead with the action", skill)
+        self.assertIn("the first line is the thing to do", skill)
+        self.assertIn("numbered list", skill)
+        # The named anti-patterns, not a paraphrase: this is the shape the
+        # user pointed at, and a summary of it does not survive rewording.
+        for filler in ("great question", "hope this helps"):
+            self.assertIn(filler, skill.lower(), filler)
+
+    def test_the_task_skill_keeps_both_exceptions(self):
+        skill = self.normalized("plugin", "skills", "task", "SKILL.md")
+        self.assertIn("explain, teach, or walk through", skill)
+        self.assertIn("is still confirmed before it runs", skill)
+
+    def test_the_carve_outs_follow_the_mandate_they_qualify(self):
+        # Hoisted above it they read as the rule and the mandate as the
+        # exception, which is the guidance inverted rather than weakened.
+        skill = self.normalized("plugin", "skills", "task", "SKILL.md")
+        self.assertLess(
+            skill.index("Lead with the action"),
+            skill.index("Two things this does not license"),
+        )
+
+    def test_the_loop_reports_failures_flatly(self):
+        skill = self.normalized("plugin", "skills", "loop", "SKILL.md")
+        self.assertIn("leads with the state, not the story", skill)
+        self.assertIn("Report a failure flatly", skill)
+        self.assertIn("never dressed in alarm", skill)
+
+    def test_the_closing_report_has_a_fixed_order(self):
+        skill = self.normalized("plugin", "skills", "attest", "SKILL.md")
+        self.assertIn("What changed, what proved it, what is left", skill)
+        self.assertIn("no closing pleasantry", skill)
+        self.assertIn("is one concrete action", skill)
+
+    def test_the_decision_log_records_the_amendment(self):
+        # The stale D-53 phrasing ("those three failures") is exactly the
+        # CGEL-IMPACT-1 failure this rule change was reviewed for, and the
+        # decision log is the one dependent that no other test reads.
+        arch = self.normalized("ARCHITECT.md")
+        self.assertNotIn("names those three failures", arch)
+        self.assertIn("**D-54", arch)
+        self.assertIn("i-have-adhd", arch, "D-54 omits the rejected alternative")
+
+
 class TheRiskLevelIsDocumentedAsAClaim(unittest.TestCase):
     """risk.level decides whether anything grades the work. It used to
     default to `low` — the level at which nothing does — and no document

@@ -100,15 +100,21 @@ Blocking: no
 Owner: cgel
 Requirement: prose the change writes for a human — documentation, README
 sections, reports, summaries, help text, release notes, close reasons —
-answers what was asked and stops. Three failures name it: the same point
+answers what was asked and stops. Five failures name it: the same point
 restated in different words, background or justification the reader did not
-ask for, and narration of the work ("first I looked at", "as mentioned
-above") where the result belongs. The bar is whether the text could be
-handed to a stakeholder unedited. Length is not the charge — an unnecessary
-sentence is one at any length, and a long document that earns every line
-passes. Code comments belong to CGEL-COMMENT-1, not to this rule.
-Evidence expected: the redundant or unrequested passage quoted with path and
-line — or a pass stating the prose in the diff was read.
+ask for, narration of the work ("first I looked at", "as mentioned above")
+where the result belongs, an approach or a wind-up placed ahead of the thing
+the reader has to do, and a sequence of steps run together as a paragraph
+where a reader has to re-parse it to act. Put the command, the path, or the
+`file:line` first and the reasoning after it; number steps that must happen
+in order. The bar is whether the text could be handed to a stakeholder
+unedited. Length is not the charge — an unnecessary sentence is one at any
+length, and a long document that earns every line passes. Prose that was
+asked to explain, teach, or walk through something is judged on the same
+bar, and there the explanation IS the answer. Code comments belong to
+CGEL-COMMENT-1, not to this rule.
+Evidence expected: the redundant, unrequested, or buried passage quoted with
+path and line — or a pass stating the prose in the diff was read.
 
 ## CGEL-SECRET-1 — No hardcoded secrets
 Blocking: yes

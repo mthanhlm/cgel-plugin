@@ -61,9 +61,10 @@ the work, do not vibe the answer:
   TODO/FIXME without owners, debug prints.
 - `CGEL-CONCISE-1`: read the prose the change writes for a human (docs,
   README sections, help text, release notes) — quote any passage that
-  restates a point already made, explains what nobody asked, or narrates the
-  work instead of stating the result. Advisory; judge the sentence, not the
-  word count.
+  restates a point already made, explains what nobody asked, narrates the
+  work instead of stating the result, buries the command or `file:line` the
+  reader needs under a wind-up, or runs ordered steps together as a
+  paragraph. Advisory; judge the sentence, not the word count.
 - `CGEL-SECRET-1`: scan the changed files for credential/token/password
   shapes.
 

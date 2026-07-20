@@ -171,13 +171,13 @@ a glyph box spans ascender to descender while the reserved box is built from
 line heights, so a few points of disagreement is expected and meaningless.
 
 `render` is for eyes, and the checklist is in
-`skills/deck-master/references/audit.md`. Nothing enforces that anyone looks —
+`skills/deck/references/audit.md`. Nothing enforces that anyone looks —
 that is the honest limit of this half.
 
 ## Design rules
 
 The visual system is documented in
-`skills/deck-master/references/visual-system.md` and enforced in `theme.py` and
+`skills/deck/references/visual-system.md` and enforced in `theme.py` and
 `audit.py`. When changing anything visual, change the token and the reference
 doc together — the skill reads those docs, so a drifted doc silently teaches the
 wrong thing.

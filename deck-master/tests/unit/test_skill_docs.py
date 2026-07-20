@@ -19,8 +19,8 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-SKILL = REPO_ROOT / "skills" / "deck-master" / "SKILL.md"
-AUDIT = REPO_ROOT / "skills" / "deck-master" / "references" / "audit.md"
+SKILL = REPO_ROOT / "skills" / "deck" / "SKILL.md"
+AUDIT = REPO_ROOT / "skills" / "deck" / "references" / "audit.md"
 PREVIEW = REPO_ROOT / "tools" / "preview.py"
 
 

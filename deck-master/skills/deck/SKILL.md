@@ -1,5 +1,5 @@
 ---
-name: deck-master
+name: deck
 description: Build an editable .pptx deck from structured content — architecture diagrams, flows, comparisons, roadmaps, technical or strategy decks. Use whenever the user asks for slides, a deck, a presentation, or a diagram-led explanation of a system. Produces native editable shapes with no template, no library and no rendering engine; guarantees no text overflow, no collisions, and a file PowerPoint opens without repair.
 ---
 
@@ -20,7 +20,9 @@ slide that proves it.
 ## Work in this order
 
 1. **Find the spine.** What is the argument, start to finish? Five slides that
-   build on each other beat twelve that each restate the topic.
+   build on each other beat twelve that each restate the topic. If the topic
+   arrives thin or ambiguous, ask what the deck is meant to argue and who is in
+   the room — one round of questions beats a deck that has to be rebuilt.
 2. **Choose a shape per slide** from the four idioms below. Reach for `diagram`
    first — if content has stages, parts, tiers or a flow, it is a diagram, not a
    list.
@@ -44,6 +46,9 @@ slide that proves it.
 7. **Fix what you found, rebuild, look once more — then stop.** One cycle. A
    second is for defects the first introduced, not for nudging things by a
    point.
+8. **Report what you built:** the slide titles in order, and anything you cut
+   and why. The titles are the argument, so reading them back is how someone
+   who was not here judges the deck without opening it.
 
 If the deck came out of a subagent or a previous session, get a **different
 reviewer** to do step 6. Whoever built it will see what they intended rather

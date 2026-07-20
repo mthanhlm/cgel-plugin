@@ -96,7 +96,7 @@ a bullet list.
 
 You choose content and structure. Colour, type, spacing and position come from
 the design system and cannot be overridden — that is what keeps a deck coherent.
-See `skills/deck-master/references/visual-system.md`.
+See `skills/deck/references/visual-system.md`.
 
 A complete example is in `examples/`:
 
@@ -106,12 +106,13 @@ PYTHONPATH=src python3 -m examples.pipeline_deck out.pptx
 
 ## As a Claude Code plugin
 
-Ships a `deck-master` skill and a `/deck` command. The skill carries the design
-rules, the idiom catalogue, and a self-critique pass that runs before a deck is
-handed over.
+Ships one skill, `deck-master:deck`. It carries the design rules, the idiom
+catalogue, and a self-critique pass that runs before a deck is handed over.
+There is no separate command: asking for a deck in plain words is enough, and
+`/deck-master:deck` invokes the same skill directly.
 
 ```
-/deck our Q3 platform migration, for the architecture review
+/deck-master:deck our Q3 platform migration, for the architecture review
 ```
 
 ## Looking at the output

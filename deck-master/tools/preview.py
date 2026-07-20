@@ -377,7 +377,7 @@ def cmd_render(args: argparse.Namespace) -> int:
         print("contact sheet skipped (Pillow not installed); the per-slide images are above")
 
     print("\nNow look at them. The checklist is in")
-    print("skills/deck-master/references/audit.md, under 'Looking at the render'.")
+    print("skills/deck/references/audit.md, under 'Looking at the render'.")
     return 0
 
 

@@ -1781,6 +1781,148 @@ def cmd_check_remove(args):
     )
 
 
+# ----------------------------------------------------------------- roadmap
+
+def cmd_roadmap(args):
+    if args.roadmap_command == "add":
+        return cmd_roadmap_add(args)
+    if args.roadmap_command == "list":
+        return cmd_roadmap_list(args)
+    if args.roadmap_command == "done":
+        return cmd_roadmap_done(args)
+    if args.roadmap_command == "show":
+        return cmd_roadmap_show(args)
+    print("ERROR usage")
+    return 3
+
+
+def _load_roadmap_checked(root, for_write=False):
+    """(roadmap, error_exit). Refuses when a present file cannot be parsed —
+    a write through it would destroy entries that may still be recoverable."""
+    roadmap, problem = C.load_roadmap(root)
+    if problem:
+        details = (
+            ("cgel: refusing to overwrite it; repair or remove the file first.",)
+            if for_write
+            else ()
+        )
+        return None, fail(
+            "ROADMAP DENIED — %s exists but is %s" % (C.ROADMAP_REL_PATH, problem),
+            *details,
+        )
+    return roadmap, None
+
+
+def _roadmap_entry_checked(roadmap, entry_id):
+    """(entry, error_exit) for an id the user named."""
+    entry = roadmap["entries"].get(entry_id)
+    if isinstance(entry, dict):
+        return entry, None
+    known = ", ".join(sorted(roadmap["entries"])) or "none"
+    return None, fail(
+        "ROADMAP DENIED — no entry '%s' (known: %s)" % (entry_id, known)
+    )
+
+
+def cmd_roadmap_add(args):
+    root = require_repo_root(args)
+    text = args.text.strip()
+    if not text:
+        return fail("ROADMAP DENIED — entry text must not be empty")
+    kind = args.kind.strip()
+    if kind not in C.ROADMAP_KINDS:
+        return fail(
+            "ROADMAP DENIED — kind must be one of: %s" % ", ".join(C.ROADMAP_KINDS)
+        )
+    roadmap, error = _load_roadmap_checked(root, for_write=True)
+    if roadmap is None:
+        return error
+    entry_id = "R-%d" % roadmap["next_id"]
+    roadmap["next_id"] += 1
+    now = C.utc_now()
+    roadmap["entries"][entry_id] = {
+        "kind": kind,
+        "text": text,
+        "status": "open",
+        "created_at": now,
+        "updated_at": now,
+    }
+    C.write_roadmap(root, roadmap)
+    return ok(
+        "ROADMAP ADDED — %s (%s)" % (entry_id, kind),
+        "cgel: recorded in %s — never part of the sealed measure, so open "
+        "tasks are unaffected." % C.ROADMAP_REL_PATH,
+    )
+
+
+def cmd_roadmap_list(args):
+    root = require_repo_root(args)
+    roadmap, error = _load_roadmap_checked(root)
+    if roadmap is None:
+        return error
+    entries = roadmap["entries"]
+
+    def sort_key(item):
+        entry_id = item[0]
+        match = re.match(r"^R-(\d+)$", entry_id)
+        return (0, int(match.group(1))) if match else (1, entry_id)
+
+    open_count = done_count = 0
+    for entry_id, entry in sorted(entries.items(), key=sort_key):
+        if not isinstance(entry, dict):
+            continue
+        status = entry.get("status", "open")
+        if status == "done":
+            done_count += 1
+            if not args.all:
+                continue
+        else:
+            open_count += 1
+        first_line = (entry.get("text") or "").strip().splitlines()
+        print(
+            "%s [%s]%s %s"
+            % (
+                entry_id,
+                entry.get("kind", "idea"),
+                " (done)" if status == "done" else "",
+                first_line[0] if first_line else "",
+            ),
+            file=sys.stderr,
+        )
+    return ok("ROADMAP LIST — %d open, %d done" % (open_count, done_count))
+
+
+def cmd_roadmap_done(args):
+    root = require_repo_root(args)
+    roadmap, error = _load_roadmap_checked(root, for_write=True)
+    if roadmap is None:
+        return error
+    entry, error = _roadmap_entry_checked(roadmap, args.entry_id)
+    if entry is None:
+        return error
+    if entry.get("status") == "done":
+        return ok("ROADMAP DONE — %s" % args.entry_id, "cgel: was already done.")
+    entry["status"] = "done"
+    entry["updated_at"] = C.utc_now()
+    C.write_roadmap(root, roadmap)
+    return ok("ROADMAP DONE — %s" % args.entry_id)
+
+
+def cmd_roadmap_show(args):
+    root = require_repo_root(args)
+    roadmap, error = _load_roadmap_checked(root)
+    if roadmap is None:
+        return error
+    entry, error = _roadmap_entry_checked(roadmap, args.entry_id)
+    if entry is None:
+        return error
+    print(entry.get("text") or "", file=sys.stderr)
+    return ok(
+        "ROADMAP SHOW — %s (%s, %s)"
+        % (args.entry_id, entry.get("kind", "idea"), entry.get("status", "open"))
+    )
+
+
 # ----------------------------------------------------------- semantic layer
 
 def cmd_rules(args):
@@ -2909,6 +3051,30 @@ def _dispatch():
     )
     p_check_remove.add_argument("check_id")
 
+    p_roadmap = sub.add_parser(
+        "roadmap",
+        help="long-horizon plans, ideas and the verification recipe "
+        "(writable any time; never part of the sealed measure)",
+    )
+    roadmap_sub = p_roadmap.add_subparsers(dest="roadmap_command")
+    p_rm_add = roadmap_sub.add_parser("add", help="record an entry")
+    p_rm_add.add_argument("text")
+    p_rm_add.add_argument(
+        "--kind",
+        default="idea",
+        help="|".join(C.ROADMAP_KINDS)
+        + " — verification-recipe records HOW to prove the project works "
+        "(build, bring-up, e2e), so it can become registered checks",
+    )
+    p_rm_list = roadmap_sub.add_parser("list", help="list open entries")
+    p_rm_list.add_argument(
+        "--all", action="store_true", help="include done entries"
+    )
+    p_rm_done = roadmap_sub.add_parser("done", help="mark an entry done")
+    p_rm_done.add_argument("entry_id")
+    p_rm_show = roadmap_sub.add_parser("show", help="print one entry in full")
+    p_rm_show.add_argument("entry_id")
+
     sub.add_parser("rules", help="list semantic rules parsed from docs/standards")
 
     p_sem = sub.add_parser("semantic", help="record verifier findings")
@@ -2934,7 +3100,7 @@ def _dispatch():
     )
     p_schema.add_argument(
         "name",
-        choices=["task-contract", "evidence", "findings", "attestation"],
+        choices=["task-contract", "evidence", "findings", "attestation", "roadmap"],
     )
 
     p_close = sub.add_parser("close", help="close an open task")
@@ -2959,6 +3125,7 @@ def _dispatch():
         "iterate": cmd_iterate,
         "unblock": cmd_unblock,
         "check": cmd_check,
+        "roadmap": cmd_roadmap,
         "rules": cmd_rules,
         "semantic": cmd_semantic,
         "attest": cmd_attest,

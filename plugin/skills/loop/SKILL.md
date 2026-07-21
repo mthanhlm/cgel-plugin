@@ -62,6 +62,20 @@ ever decide the task this session owns.
    Pick the one that is true. RETRY on a success inflates the retry rate
    the project measures itself by; ADVANCE on a failure is refused.
 
+## The roadmap
+
+Run `cgel roadmap add "..."` the moment an iteration surfaces a future
+idea, a follow-up, or debt worth scheduling — work this task must not
+absorb still deserves a record, and the roadmap is writable at any time,
+never part of the sealed measure, and a better home than scope creep or a
+transcript that scrolls away. Consult `cgel roadmap list` when INVESTIGATE
+needs direction on a long effort. When the user explains how they prove the
+project end-to-end (build, bring-up, which API to hit, what the database
+should show), record it with `--kind verification-recipe`; the registry is
+frozen while a task is open, so between tasks turn the recipe into
+registered checks with `cgel check add` — an e2e check that runs under
+`cgel verify` is evidence, which pasted terminal output never is.
+
 ## The default-same guard
 
 The guard compares machine-recorded failure signatures (check id, failure

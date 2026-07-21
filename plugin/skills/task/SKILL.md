@@ -93,6 +93,21 @@ one exists.
   or CGEL-IMPACT-1 will block PASS at the end instead of informing the
   plan at the start.
 
+Start intake with `cgel roadmap list` — earlier sessions may have left
+milestones, ideas or a verification recipe that change this task's shape.
+When the user describes anything
+beyond this task — future ideas, milestones, a long effort this task only
+begins — record each with `cgel roadmap add "..." --kind idea|milestone`
+instead of letting it die in the transcript. The roadmap is stored at
+`.cgel/roadmap.json` but written ONLY through the verb (a direct edit is a
+gated governance write); it is writable at any time, task or no task, and
+never part of the sealed measure, so recording a plan cannot block a seal.
+And when the user explains HOW they prove the project works — the build
+command, how to bring it up, which API to hit, what the database should
+show afterwards — record that as `--kind verification-recipe` and register
+real checks from it (`cgel check add`, before sealing) so end-to-end proof
+becomes evidence, not pasted output.
+
 ## 3. Draft the contract
 
 Write `.task/contract.json` (this path is always writable; `cgel schema
@@ -173,7 +188,11 @@ resealing the SAME digest needs no new approval; a changed contract does.
 
 For large mechanical changes inside the sealed scope (renames, repetitive
 edits), delegate execution to the `cgel:worker` subagent with an exact spec
-— you keep the decisions, the loop, and every cgel command.
+— you keep the decisions, the loop, and every cgel command. The split is
+deliberate, and on long tasks it is the default: the worker is pinned to a
+faster, cheaper model that executes exactly what a spec says, so planning
+quality stays where the capacity is — contracts, hypotheses, risk claims
+and iterate decisions are yours and are never delegated.
 
 ## 6. Loop with evidence
 

@@ -24,6 +24,13 @@ DRAFT_EXEMPT_PATTERNS = [".task/**"]
 # while no task governs the repo.
 ROOT_MEMORY_FILES = {"CLAUDE.md", "CLAUDE.local.md"}
 REGISTRY_REL_PATH = ".cgel/registry.json"
+# Planning material, never the measure: the roadmap lives under .cgel/ so the
+# `cgel roadmap` verb is its only door (direct edits still need
+# modify-governance), but governance_bundle excludes it — it exists to be
+# written mid-task, so digesting it would BLOCK every open seal on each
+# recorded idea.
+ROADMAP_REL_PATH = ".cgel/roadmap.json"
+ROADMAP_KINDS = ("idea", "milestone", "verification-recipe")
 EVIDENCE_FILE = "evidence.jsonl"
 EVENTS_FILE = "events.jsonl"
 ITERATIONS_FILE = "iterations.jsonl"
@@ -925,6 +932,14 @@ def governance_bundle(repo_root, schema=BUNDLE_SCHEMA):
     excluded = []
     rehashed = False
     for rel in sorted(set(_iter_bundle_files(repo_root))):
+        if rel == ROADMAP_REL_PATH:
+            # Hardcoded, not config bundle_exclude: a native verb cannot
+            # depend on per-repo config being present, and a repo missing the
+            # exclude would BLOCK on its first recorded idea. Unconditional
+            # across bundle schemas: the file is created only by the roadmap
+            # verb, which postdates every schema, so no sealed measure can
+            # legitimately contain it.
+            continue
         if exclude and rel != ".cgel/config.json" and path_matches(rel, exclude):
             excluded.append(rel)
             continue
@@ -1199,6 +1214,36 @@ def load_registry(repo_root):
         _debug("load_registry", exc)
         return {}, sha256_file(path)
     return (data if isinstance(data, dict) else {}), sha256_file(path)
+
+
+# ----------------------------------------------------------------- roadmap
+
+def load_roadmap(repo_root):
+    """Returns (roadmap dict, problem). A missing file is a fresh empty
+    roadmap; a file that exists but cannot be parsed returns problem != None,
+    and callers that WRITE must refuse rather than overwrite entries the user
+    recorded (unlike the registry, there is no freeze window to protect a
+    corrupt file from a well-meaning rewrite)."""
+    path = os.path.join(repo_root, ROADMAP_REL_PATH)
+    empty = {"entries": {}, "next_id": 1}
+    try:
+        data = load_json(path)
+    except FileNotFoundError:
+        return empty, None
+    except Exception as exc:
+        _debug("load_roadmap", exc)
+        return empty, "not valid JSON"
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
+        return empty, "not a roadmap object"
+    if not isinstance(data.get("next_id"), int) or data["next_id"] < 1:
+        data["next_id"] = 1 + max(
+            [int(k[2:]) for k in data["entries"] if re.match(r"^R-\d+$", k)] or [0]
+        )
+    return data, None
+
+
+def write_roadmap(repo_root, roadmap):
+    atomic_write_json(os.path.join(repo_root, ROADMAP_REL_PATH), roadmap)
 
 
 # -------------------------------------------------------------- hash chain

@@ -421,6 +421,7 @@ absolute path — `cgel -C /path/to/project seal ...` — and no `cd` is needed.
 |---|---|
 | `cgel init` | activate CGEL for the project (`.cgel/`, `.task/`, registry stub; empties `attribution.*` in `.claude/settings.json`) |
 | `cgel check add/list/doctor/remove` | register (refused if the command passes with no project present; `--watch` globs scope staleness) / list / re-test every check from both sides — must fail empty *and* pass in-tree / remove a check (between tasks only) |
+| `cgel roadmap add/list/done/show` | long-horizon plans: ideas, milestones, and the project's verification recipe (`--kind verification-recipe` — how to build, bring up and e2e-prove it, meant to become registered checks). Lives at `.cgel/roadmap.json`, written only through the verb, writable at ANY time — deliberately excluded from the sealed measure, so recording a plan never blocks an open task |
 | `cgel validate` | schema-check the contract draft |
 | `cgel summary` | validate + normalized contract summary + digest + the approval token to paste verbatim into the approval question (a truncated token does not bind) |
 | `cgel seal <id> --digest <d>` | freeze contract + governance bundle; opens the edit gate; resealing the same digest reuses its approval |
@@ -432,7 +433,7 @@ absolute path — `cgel -C /path/to/project seal ...` — and no `cd` is needed.
 | `cgel status` | lifecycle status — all open tasks, or one with `--task` |
 | `cgel unblock` | USER action: lift a budget block, or widen a budget before it runs out |
 | `cgel attest` | export a sanitized attestation |
-| `cgel schema <name>` | print a shipped schema (task-contract, evidence, findings, attestation) |
+| `cgel schema <name>` | print a shipped schema (task-contract, evidence, findings, attestation, roadmap) |
 | `cgel close --as PASS\|ESCALATE\|ROLLED_BACK\|ABORT` | terminal status (PASS is validated); frees the matching draft |
 
 ## Usage
@@ -532,7 +533,7 @@ conflicts. MCP interface for the control plane: decide with Phase 1 usage
 data.
 
 Design record: [ARCHITECT.md](ARCHITECT.md) — the signed-off CGEL v1.0
-consolidated architecture, plus the post-v1.0 amendments D-35..D-54 that
+consolidated architecture, plus the post-v1.0 amendments D-35..D-55 that
 record every change since. [ROADMAP.md](ROADMAP.md) holds the parts that
 were designed and never built — it is a wish list, kept apart from the
 design record on purpose.

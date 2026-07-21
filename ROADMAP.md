@@ -110,3 +110,31 @@ Measurement sources: attestations + iterations.jsonl + hook logs (everything is 
 - **Guidebook:** retrieval precision (references loaded vs cited in decisions); stale-reference incidents; the verifier's rule-citation rate; skill fresh-agent test pass rate.
 - **Human:** human escalation rate (of the right kind — a "good" escalation is the kind that blocks a dangerous action); approval latency.
 - **MVP acceptance thresholds (proposed):** 0 PASSes lacking evidence (per audit); 0 scope violations slipping past the Edit/Write gate; the default-same guard triggers correctly ≥ 90% on the demo failure set; verifier output ≤ cap on 95% of runs.
+
+---
+
+## UI
+
+**Read-only local dashboard (`cgel ui`)** — the next candidate. A stdlib
+`http.server` bound to `127.0.0.1` on an ephemeral port, hand-written
+HTML/CSS in a Linear-style dark theme, rendering what the store already
+knows: open tasks, contracts, iterations, evidence chain, check results,
+roadmap. Constraints settled in review: it must be a subcommand (bare
+`cgel` is a fast usage-error the model itself invokes; a blocking server
+there would hang the model's Bash call, so `ui` is a human-typed command
+the model must never run); handlers strictly read-only; task/reason text is
+model-authored and must be HTML-escaped; and every verdict it renders must
+come from the same helpers `cgel status` uses — some of those live in
+`bin/cgel` today and would move to `cgel_common` first, because two
+implementations of one verdict is the disease D-48 names.
+
+**Browser-driven interaction with the model** — deferred, explicitly. A
+plugin's injection points are hooks, all triggered by the model's own
+actions; nothing lets a web click wake or drive the model, and a
+UI-writes-a-queue-file scheme is typing with extra steps plus an unscoped
+write path. Approvals CANNOT move to the browser under the current trust
+model either: an approval is real because it is the user's recorded answer
+in the transcript, which the gate verifies — a browser click cannot create
+that record, and a side channel that fakes it would hollow out the seal.
+Revisit only if/when an MCP interface exists (see "After Phase 1" in
+§15.8 of ARCHITECT.md).

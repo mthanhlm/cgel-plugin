@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cgel.dev/schemas/roadmap.schema.json",
+  "title": "CGEL Roadmap",
+  "description": "Long-horizon planning material at .cgel/roadmap.json, managed only by `cgel roadmap` verbs (direct edits stay gated as a governance path). Deliberately excluded from the governance bundle: it exists to be written mid-task, so it is never part of the sealed measure. The shipped reader is hand-rolled (stdlib only) but mirrors these constraints.",
+  "type": "object",
+  "required": ["entries"],
+  "properties": {
+    "entries": {
+      "type": "object",
+      "description": "Keyed R-1, R-2, ... in creation order.",
+      "patternProperties": {
+        "^R-[1-9][0-9]*$": {
+          "type": "object",
+          "required": ["kind", "text", "status"],
+          "properties": {
+            "kind": {
+              "enum": ["idea", "milestone", "verification-recipe"],
+              "description": "verification-recipe records HOW to prove the project works (build, bring-up, e2e interaction, what to inspect), so the loop can turn it into registered checks"
+            },
+            "text": {"type": "string", "minLength": 1},
+            "status": {"enum": ["open", "done"]},
+            "created_at": {"type": "string", "description": "UTC ISO 8601"},
+            "updated_at": {"type": "string", "description": "UTC ISO 8601"}
+          }
+        }
+      }
+    },
+    "next_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Counter for the next R-N id; recomputed from entries when missing."
+    }
+  }
+}

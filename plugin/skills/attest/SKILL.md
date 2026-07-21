@@ -13,9 +13,36 @@ With several tasks open, every command here takes `--task <id>`.
 `cgel status` and the sealed contract tell you if semantic verification is
 required (frozen at seal: high risk, AI-enabled, `semantic_review: true`,
 or blocking rules at medium risk). `cgel rules` lists the semantic rules
-in force. If it is not required, skip to step 3.
+in force. If it is not required, sweep (step 2) and then skip to step 4.
 
-## 2. Run the verifier (if required)
+## 2. Sweep the change clean — before any verifier runs
+
+Walk `git diff HEAD` one last time and delete the litter the loop left:
+comments that restate the code or no longer match it, helpers nothing
+calls anymore, imports nothing uses, files created and then abandoned,
+debug leftovers. Two hard bounds keep this pass safe:
+
+- **Only the files this task touched.** The diff IS the boundary — a
+  cleanup that wanders into untouched files is scope creep holding a
+  broom, and the edit gate will rightly refuse anything outside
+  `scope.allowed` anyway.
+- **Behavior-preserving deletions only.** If removing it changes what the
+  code does, it is not cleanup — leave it, or take it through a normal
+  iteration with its own hypothesis.
+
+When there is anything to delete, open the sweep as its own iteration
+(`cgel iterate open --hypothesis "H-N: cleanup sweep ..."`) and decide it
+on fresh evidence like any change. When the diff is already clean, skip
+ahead — a ceremony with nothing to do is noise.
+
+This pass runs BEFORE the verifier on purpose: cleanup edits after
+`cgel semantic record` stale the findings and force a second verifier
+run, while a sweep done first means the review judges the diff you
+actually ship. On a long task this is where the accumulated litter goes —
+CGEL-COMMENT-1 and CGEL-DEBT-1 only advise at close, and this pass exists
+so they find nothing left to say.
+
+## 3. Run the verifier (if required)
 
 Launch the `cgel:verifier` subagent (it is read-only by construction —
 never hand it write tools). Give it: the task goal, the changed files, the
@@ -55,7 +82,7 @@ afterwards makes it stale — re-run the verifier after fixes.
   evidence and re-run the verifier. Still disagreeing? `cgel close --as
   ESCALATE`. Never bury a blocking finding.
 
-## 3. Fresh evidence, then close — two calls
+## 4. Fresh evidence, then close — two calls
 
 ```
 cgel verify --required
